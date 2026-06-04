@@ -227,6 +227,12 @@ class MarketSignal(BaseModel):
     expected_value: float          # EV = (model_prob * (1/market_prob)) - 1
     edge: float                    # model_prob - market_prob
 
+    # CLOB prices at signal-detection time (None when CLOB unavailable or tokens missing)
+    clob_bid: Optional[float] = None
+    clob_ask: Optional[float] = None
+    estimated_fill_price: Optional[float] = None
+    book_liquidity_usd: Optional[float] = None
+
     # Meta
     signal_strength: SignalStrength
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -279,6 +285,7 @@ class BetRecord(BaseModel):
     paper_trade: bool = True
     status: BetStatus = BetStatus.PAPER
     polymarket_order_id: Optional[str] = None
+    actual_fill_price: Optional[float] = None  # real execution price from CLOB response
     placed_at: datetime = Field(default_factory=datetime.utcnow)
     settled_at: Optional[datetime] = None
     pnl_usd: Optional[float] = None

@@ -170,6 +170,12 @@ class SignalORM(Base):
     edge: Mapped[float] = mapped_column(Float, nullable=False)
     signal_strength: Mapped[str] = mapped_column(String(10), nullable=False)
 
+    # CLOB prices at signal-detection time (populated when tokens are available)
+    clob_bid: Mapped[float | None] = mapped_column(Float)
+    clob_ask: Mapped[float | None] = mapped_column(Float)
+    estimated_fill_price: Mapped[float | None] = mapped_column(Float)
+    book_liquidity_usd: Mapped[float | None] = mapped_column(Float)
+
     acted_on: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -207,6 +213,12 @@ class BetORM(Base):
     # Populated when position is closed before resolution (take-profit / stop-loss / pre-kickoff)
     close_price: Mapped[float | None] = mapped_column(Float)
     close_reason: Mapped[str | None] = mapped_column(String(40))
+
+    # Execution quality
+    actual_fill_price: Mapped[float | None] = mapped_column(Float)  # real fill from CLOB
+    # CLV tracking (populated by clv_tracker job ~10min before kickoff)
+    closing_price: Mapped[float | None] = mapped_column(Float)
+    clv: Mapped[float | None] = mapped_column(Float)  # closing_price - entry_price
 
     placed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
