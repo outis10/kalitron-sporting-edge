@@ -87,6 +87,7 @@ async def odds_analyzer_node(state: AgentState) -> AgentState:
             for odds in match_odds:
                 signal = _evaluate_opportunity(match, pred, odds)
                 if signal:
+                    _enrich_with_clob_prices(signal, odds)
                     signals.append(signal)
                     await _persist_signal(db, signal)
                     log.info(
@@ -185,6 +186,47 @@ def _evaluate_opportunity(
     )
 
 
+def _enrich_with_clob_prices(signal: "MarketSignal", odds: "MatchOdds") -> None:
+    """
+    Fetch real-time CLOB bid/ask for the signal's token and run fill simulation.
+    Populates clob_bid, clob_ask, estimated_fill_price, book_liquidity_usd on the signal.
+    No-ops silently when tokens are unavailable or the CLOB call fails.
+    """
+    if not odds.yes_token_id or not odds.no_token_id:
+        return
+
+    try:
+        from sporting_edge.tools.polymarket_tools import estimate_fill, fetch_real_odds_from_clob
+        from sporting_edge.models.schemas import BetSide
+
+        clob = fetch_real_odds_from_clob(odds.yes_token_id, odds.no_token_id)
+        if not clob:
+            return
+
+        if signal.bet_side == BetSide.YES:
+            signal.clob_bid = clob.yes_bid
+            signal.clob_ask = clob.yes_ask
+            ask_levels = clob.yes_asks
+        else:
+            signal.clob_bid = clob.no_bid
+            signal.clob_ask = clob.no_ask
+            ask_levels = clob.no_asks
+
+        if ask_levels and signal.odds.liquidity > 0:
+            fill = estimate_fill(ask_levels, notional_usd=signal.odds.liquidity * 0.01)
+            signal.estimated_fill_price = fill.avg_fill_price
+            signal.book_liquidity_usd = fill.total_ask_notional_usd
+
+        log.debug(
+            "signal_clob_enriched",
+            signal_id=signal.signal_id[:8],
+            clob_ask=signal.clob_ask,
+            estimated_fill=signal.estimated_fill_price,
+        )
+    except Exception as exc:
+        log.debug("signal_clob_enrich_failed", error=str(exc))
+
+
 def _ev_threshold(liquidity: float) -> float:
     """
     Return the EV threshold for the current trading mode and market liquidity.
@@ -268,6 +310,10 @@ async def _persist_signal(db, signal: MarketSignal) -> None:
         expected_value=signal.expected_value,
         edge=signal.edge,
         signal_strength=signal.signal_strength.value,
+        clob_bid=signal.clob_bid,
+        clob_ask=signal.clob_ask,
+        estimated_fill_price=signal.estimated_fill_price,
+        book_liquidity_usd=signal.book_liquidity_usd,
         acted_on=False,
     ).on_conflict_do_nothing()
 

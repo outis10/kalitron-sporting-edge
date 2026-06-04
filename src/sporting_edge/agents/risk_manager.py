@@ -235,9 +235,10 @@ def _evaluate_signal(
 
     # ── Guard: league correlation ─────────────────────────────────────────────
     league_id = signal.match.league.id
-    if league_count[league_id] >= MAX_BETS_PER_LEAGUE_PER_DAY:
+    bets_in_league = league_count.get(league_id, 0)
+    if bets_in_league >= MAX_BETS_PER_LEAGUE_PER_DAY:
         base.rejection_reason = (
-            f"league_correlation_limit ({league_count[league_id]} bets in league {league_id})"
+            f"league_correlation_limit ({bets_in_league} bets in league {league_id})"
         )
         return base
 

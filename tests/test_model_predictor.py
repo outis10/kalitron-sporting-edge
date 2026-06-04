@@ -7,9 +7,9 @@ from sporting_edge.agents.model_predictor import (
     predict_match,
     _poisson_matrix,
     _estimate_expected_goals,
-    kelly_fraction,
     LeaguePrior,
 )
+from sporting_edge.agents.risk_manager import kelly_fraction
 from sporting_edge.models.schemas import Match, Outcome
 
 

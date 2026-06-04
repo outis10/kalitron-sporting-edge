@@ -205,6 +205,7 @@ async def _place_bet(signal: MarketSignal, decision: BetDecision) -> BetRecord |
     )
 
     polymarket_order_id = resp.get("order_id") or resp.get("orderID")
+    actual_fill_price = _extract_fill_price(resp) if not is_paper else None
     status = BetStatus.PAPER if is_paper else BetStatus.OPEN
 
     return BetRecord(
@@ -223,8 +224,24 @@ async def _place_bet(signal: MarketSignal, decision: BetDecision) -> BetRecord |
         paper_trade=is_paper,
         status=status,
         polymarket_order_id=polymarket_order_id,
+        actual_fill_price=actual_fill_price,
         placed_at=datetime.now(tz=timezone.utc),
     )
+
+
+def _extract_fill_price(resp: dict) -> float | None:
+    """
+    Try to extract the average fill price from a CLOB order response.
+    Field names vary across CLOB versions; returns None when unrecognised.
+    """
+    for key in ("avg_price", "avgPrice", "price", "fill_price", "fillPrice"):
+        val = resp.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return None
 
 
 # ── DB writes ─────────────────────────────────────────────────────────────────
@@ -246,6 +263,7 @@ async def _persist_bet(db, bet: BetRecord) -> None:
         paper_trade=bet.paper_trade,
         status=bet.status.value,
         polymarket_order_id=bet.polymarket_order_id,
+        actual_fill_price=bet.actual_fill_price,
         placed_at=bet.placed_at,
     ).on_conflict_do_nothing()
     await db.execute(stmt)
