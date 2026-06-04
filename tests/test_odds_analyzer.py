@@ -3,7 +3,10 @@ Tests for OddsAnalyzer — EV calculations and signal generation.
 No DB, no network calls.
 """
 import pytest
-from sporting_edge.agents.odds_analyzer import calculate_ev, _evaluate_opportunity, _classify_strength
+from unittest.mock import patch
+from sporting_edge.agents.odds_analyzer import (
+    calculate_ev, _evaluate_opportunity, _classify_strength, _ev_threshold,
+)
 from sporting_edge.models.schemas import (
     MatchOdds, ModelPrediction, Outcome, OutcomeProbabilities,
     SignalStrength, BetSide,
@@ -95,3 +98,88 @@ def test_evaluate_opportunity_rejects_low_ev(sample_match):
 
     signal = _evaluate_opportunity(sample_match, pred, odds)
     assert signal is None
+
+
+# ── EV threshold selection ────────────────────────────────────────────────────
+
+def test_ev_threshold_paper_always_uses_base():
+    """In paper trading mode the base threshold applies regardless of liquidity."""
+    import sporting_edge.agents.odds_analyzer as mod
+    with patch.object(mod.settings, "paper_trading", True), \
+         patch.object(mod.settings, "min_ev_threshold", 0.05):
+        assert _ev_threshold(liquidity=3_000) == 0.05
+        assert _ev_threshold(liquidity=50_000) == 0.05
+
+
+def test_ev_threshold_live_normal_liquidity():
+    """In live mode with normal liquidity, use min_ev_threshold_live."""
+    import sporting_edge.agents.odds_analyzer as mod
+    with patch.object(mod.settings, "paper_trading", False), \
+         patch.object(mod.settings, "min_ev_threshold_live", 0.08), \
+         patch.object(mod.settings, "min_ev_threshold_low_liquidity", 0.12), \
+         patch.object(mod.settings, "low_liquidity_threshold", 10_000):
+        assert _ev_threshold(liquidity=50_000) == 0.08
+
+
+def test_ev_threshold_live_low_liquidity():
+    """In live mode with low liquidity, use min_ev_threshold_low_liquidity."""
+    import sporting_edge.agents.odds_analyzer as mod
+    with patch.object(mod.settings, "paper_trading", False), \
+         patch.object(mod.settings, "min_ev_threshold_live", 0.08), \
+         patch.object(mod.settings, "min_ev_threshold_low_liquidity", 0.12), \
+         patch.object(mod.settings, "low_liquidity_threshold", 10_000):
+        assert _ev_threshold(liquidity=7_000) == 0.12
+
+
+def test_signal_accepted_paper_rejected_live(sample_match):
+    """EV=6% passes paper threshold (5%) but is rejected by live threshold (8%)."""
+    # yes_price=0.47, model=0.50 → EV = 0.50/0.47 - 1 ≈ 6.4%
+    # Probabilities must sum to 1.0 so OutcomeProbabilities doesn't renormalize home
+    odds = _make_odds(yes_price=0.47, liquidity=50_000)
+    pred = _make_prediction(home=0.50, draw=0.28, away=0.22)  # sums to 1.0 → home stays 0.50
+
+    import sporting_edge.agents.odds_analyzer as mod
+
+    with patch.object(mod.settings, "paper_trading", True), \
+         patch.object(mod.settings, "min_ev_threshold", 0.05):
+        signal_paper = _evaluate_opportunity(sample_match, pred, odds)
+        assert signal_paper is not None, "Should generate signal in paper mode"
+
+    with patch.object(mod.settings, "paper_trading", False), \
+         patch.object(mod.settings, "min_ev_threshold_live", 0.08), \
+         patch.object(mod.settings, "min_ev_threshold_low_liquidity", 0.12), \
+         patch.object(mod.settings, "low_liquidity_threshold", 10_000):
+        signal_live = _evaluate_opportunity(sample_match, pred, odds)
+        assert signal_live is None, "Should reject signal in live mode (EV < 8%)"
+
+
+def test_signal_accepted_live_with_sufficient_ev(sample_match):
+    """EV=10% passes both paper and live thresholds."""
+    # yes_price=0.42, model=0.55 → EV ≈ 30.9% — well above both thresholds
+    odds = _make_odds(yes_price=0.42, liquidity=50_000)
+    pred = _make_prediction(home=0.55)
+
+    import sporting_edge.agents.odds_analyzer as mod
+    with patch.object(mod.settings, "paper_trading", False), \
+         patch.object(mod.settings, "min_ev_threshold_live", 0.08), \
+         patch.object(mod.settings, "min_ev_threshold_low_liquidity", 0.12), \
+         patch.object(mod.settings, "low_liquidity_threshold", 10_000):
+        signal = _evaluate_opportunity(sample_match, pred, odds)
+        assert signal is not None
+
+
+def test_signal_low_liquidity_live_requires_higher_ev(sample_match):
+    """In live mode, markets with $7k liquidity require EV >= 12%."""
+    # yes_price=0.44, model=0.50 → EV ≈ 13.6% — passes 12% bar
+    odds_pass = _make_odds(yes_price=0.44, liquidity=7_000)
+    # yes_price=0.47, model=0.50 → EV ≈ 6.4% — below 12% bar
+    odds_fail = _make_odds(yes_price=0.47, liquidity=7_000)
+    pred = _make_prediction(home=0.50)
+
+    import sporting_edge.agents.odds_analyzer as mod
+    with patch.object(mod.settings, "paper_trading", False), \
+         patch.object(mod.settings, "min_ev_threshold_live", 0.08), \
+         patch.object(mod.settings, "min_ev_threshold_low_liquidity", 0.12), \
+         patch.object(mod.settings, "low_liquidity_threshold", 10_000):
+        assert _evaluate_opportunity(sample_match, pred, odds_pass) is not None
+        assert _evaluate_opportunity(sample_match, pred, odds_fail) is None

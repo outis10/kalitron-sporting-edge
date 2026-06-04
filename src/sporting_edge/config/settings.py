@@ -50,7 +50,10 @@ class Settings(BaseSettings):
     bankroll_usd: float = 1000.0
     max_kelly_fraction: float = Field(0.25, description="Quarter Kelly")
     max_bet_pct_bankroll: float = 0.02
-    min_ev_threshold: float = 0.05          # 5 %
+    min_ev_threshold: float = 0.05              # paper trading / backtesting
+    min_ev_threshold_live: float = 0.08         # production — absorbs spread + slippage + model error
+    min_ev_threshold_low_liquidity: float = 0.12  # markets $5k-$10k liquidity
+    low_liquidity_threshold: float = 10_000.0   # below this → stricter EV required
     min_market_liquidity: float = 5000.0
     min_model_confidence: float = 0.60
     daily_loss_limit_usd: float = 50.0
