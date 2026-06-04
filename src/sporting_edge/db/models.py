@@ -214,6 +214,9 @@ class BetORM(Base):
     close_price: Mapped[float | None] = mapped_column(Float)
     close_reason: Mapped[str | None] = mapped_column(String(40))
 
+    # Settlement tracking
+    settlement_source: Mapped[str | None] = mapped_column(String(20))  # api_football | polymarket | both
+
     # Execution quality
     actual_fill_price: Mapped[float | None] = mapped_column(Float)  # real fill from CLOB
     # CLV tracking (populated by clv_tracker job ~10min before kickoff)

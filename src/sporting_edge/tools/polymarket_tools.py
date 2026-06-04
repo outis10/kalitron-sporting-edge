@@ -596,6 +596,52 @@ def _extract_numeric(payload: Any) -> float | None:
     return None
 
 
+async def get_polymarket_market_resolution(condition_id: str) -> dict | None:
+    """
+    Fetch market resolution status from Gamma API.
+
+    Returns a dict with:
+      resolved (bool)  — True if the market has been resolved
+      winner   (str|None) — "YES", "NO", or None if unresolved
+      closed   (bool)  — True if the market is closed for trading
+
+    Returns None on network error or missing market.
+    Used by BetSettler to cross-validate with API-Football results.
+    """
+    try:
+        async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{GAMMA_URL}/markets",
+                params={"condition_id": condition_id},
+            )
+            resp.raise_for_status()
+            markets = resp.json()
+
+        if not markets:
+            return None
+
+        market = markets[0]
+        resolved = bool(market.get("resolved") or market.get("is_resolved"))
+        closed = bool(market.get("closed") or market.get("is_closed"))
+
+        # Gamma returns winner as "YES" / "NO" when resolved
+        winner = market.get("winner") or market.get("winning_side")
+        if winner is not None:
+            winner = str(winner).upper()
+            if winner not in ("YES", "NO"):
+                winner = None
+
+        return {"resolved": resolved, "winner": winner, "closed": closed}
+
+    except Exception as exc:
+        log.warning(
+            "polymarket_resolution_fetch_failed",
+            condition_id=condition_id[:16],
+            error=str(exc),
+        )
+        return None
+
+
 def cancel_order(order_id: str) -> bool:
     """Cancel an open order by ID."""
     client = get_clob_client()
