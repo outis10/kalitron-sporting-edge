@@ -169,10 +169,10 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
 def _apply_migrations():
     import subprocess
 
-    migration_files = [
-        "migrations/versions/001_initial_schema.sql",
-        "migrations/versions/002_position_manager.sql",
-    ]
+    import glob as glob_mod
+    migration_files = sorted(
+        glob_mod.glob("migrations/versions/*.sql")
+    )
 
     # Detect whether psql is available locally or only inside the Docker container
     local_psql = subprocess.run(["which", "psql"], capture_output=True).returncode == 0
