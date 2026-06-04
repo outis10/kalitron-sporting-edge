@@ -69,8 +69,11 @@ class Settings(BaseSettings):
     # ── Position management ───────────────────────────────────────────────────
     take_profit_pct: float = Field(0.10, description="Close position at +10% price gain")
     stop_loss_pct: float = Field(0.05, description="Close position at -5% price drop")
+    lineup_check_minutes_before_kickoff: int = Field(
+        65, description="Stage 1: fetch lineups and recalculate EV; close if edge is gone"
+    )
     force_close_minutes_before_kickoff: int = Field(
-        60, description="Force-close all open positions N minutes before kickoff"
+        30, description="Stage 2: unconditional force-close before kickoff"
     )
 
     # ── Scheduler ────────────────────────────────────────────────────────────

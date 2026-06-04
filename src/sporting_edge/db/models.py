@@ -213,6 +213,8 @@ class BetORM(Base):
     # Populated when position is closed before resolution (take-profit / stop-loss / pre-kickoff)
     close_price: Mapped[float | None] = mapped_column(Float)
     close_reason: Mapped[str | None] = mapped_column(String(40))
+    # Set True once the lineup check (stage 1) has run for this bet
+    lineup_checked: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Settlement tracking
     settlement_source: Mapped[str | None] = mapped_column(String(20))  # api_football | polymarket | both
