@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sporting_edge.agents.bet_settler import run_bet_settler
+from sporting_edge.agents.clv_tracker import run_clv_tracker
 from sporting_edge.agents.position_manager import run_position_manager
 from sporting_edge.api.routers import markets, pipeline, positions
 from sporting_edge.config import settings
@@ -59,12 +60,21 @@ async def lifespan(app: FastAPI):
         id="bet_settler",
         replace_existing=True,
     )
+    # CLV tracker — captures closing price ~70-90 min before kickoff
+    scheduler.add_job(
+        _scheduled_clv_capture,
+        trigger="interval",
+        minutes=settings.position_check_minutes,  # same cadence as position check (5 min)
+        id="clv_tracker",
+        replace_existing=True,
+    )
     scheduler.start()
     log.info(
         "scheduler_started",
         signal_interval_min=settings.signal_scan_minutes,
         position_interval_min=settings.position_check_minutes,
         settler_interval_min=30,
+        clv_interval_min=settings.position_check_minutes,
     )
 
     # Start Polymarket WebSocket streamer in the background.
@@ -105,6 +115,14 @@ async def _scheduled_settle() -> None:
         await run_bet_settler()
     except Exception as exc:
         log.error("bet_settler_failed", error=str(exc))
+
+
+async def _scheduled_clv_capture() -> None:
+    """Called by APScheduler — captures closing price for bets near kickoff."""
+    try:
+        await run_clv_tracker()
+    except Exception as exc:
+        log.error("clv_tracker_failed", error=str(exc))
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
