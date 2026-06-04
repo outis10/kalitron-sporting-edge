@@ -374,6 +374,24 @@ def fetch_token_best_bid(token_id: str) -> float | None:
         return None
 
 
+def fetch_token_best_ask(token_id: str) -> float | None:
+    """
+    Fetch the best ask for a single token via CLOB REST.
+    Used by clv_tracker to capture the closing price before kickoff.
+    Returns the lowest ask price (= what a new buyer would pay), or None on error.
+    """
+    client = get_clob_client()
+    if not client:
+        return None
+    try:
+        orderbook = client.get_order_book(token_id)
+        _, asks = _parse_orderbook_levels(orderbook)
+        return asks[0]["price"] if asks else None
+    except Exception as exc:
+        log.warning("fetch_token_best_ask_failed", token_id=token_id[:8], error=str(exc))
+        return None
+
+
 # ── Order placement ───────────────────────────────────────────────────────────
 
 def _get_tick_size(client, token_id: str) -> str:
