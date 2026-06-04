@@ -26,17 +26,20 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 
+from sporting_edge.agents.model_predictor import ModelPrediction, OutcomeProbabilities, adjust_prediction_for_lineups
 from sporting_edge.config import settings
 from sporting_edge.config.logging import get_logger
-from sporting_edge.db.models import BetORM
+from sporting_edge.db.models import BetORM, PredictionORM
 from sporting_edge.db.session import AsyncSessionLocal
+from sporting_edge.tools.football_api import FootballAPIClient
 from sporting_edge.tools.polymarket_streamer import get_streamer
-from sporting_edge.tools.polymarket_tools import fetch_token_best_bid, place_fak_order
+from sporting_edge.tools.polymarket_tools import fetch_token_best_ask, fetch_token_best_bid, place_fak_order
 
 log = get_logger(__name__)
 
 # Statuses that represent open, closable positions
 OPEN_STATUSES = ("open", "paper")
+
 
 
 async def run_position_manager() -> dict:
@@ -52,7 +55,18 @@ async def run_position_manager() -> dict:
         summary["checked"] = len(bets)
 
         for bet in bets:
-            reason = await _should_close(bet, now)
+            reason = _should_close(bet, now)
+
+            # Stage 1: lineup check — may override reason or mark lineup_checked
+            if reason == "lineup_check":
+                lineup_close = await _run_lineup_check(db, bet)
+                if lineup_close:
+                    reason = "lineup_ev_loss"
+                else:
+                    # Mark as checked; hold until force-close window
+                    await _mark_lineup_checked(db, bet)
+                    continue
+
             if reason is None:
                 continue
 
@@ -90,25 +104,31 @@ async def run_position_manager() -> dict:
 
 # ── Decision logic ────────────────────────────────────────────────────────────
 
-async def _should_close(bet: BetORM, now: datetime) -> str | None:
+def _should_close(bet: BetORM, now: datetime) -> str | None:
     """
     Returns the close reason string, or None if position should stay open.
-    Mirrors polymarket-trading-system PositionManager.should_close_position().
-    """
-    # Force-close: kickoff is imminent — model is no longer valid post-kickoff
-    if bet.kickoff_utc:
-        kickoff = bet.kickoff_utc
-        if kickoff.tzinfo is None:
-            kickoff = kickoff.replace(tzinfo=timezone.utc)
-        minutes_to_kickoff = (kickoff - now).total_seconds() / 60
-        if minutes_to_kickoff <= settings.force_close_minutes_before_kickoff:
-            return "kickoff"
 
-    # Price-based checks require a current price — fetched by caller
-    # We return the reason here; caller fetches price then calls _close_position
-    # Pre-check: we can only estimate based on entry price thresholds
-    # (actual current price fetched by _get_current_bid in caller)
-    return "price_check"  # sentinel: caller will verify actual price
+    Two-stage pre-kickoff logic:
+      Stage 1 (lineup_check): fetch lineups + recalculate EV; close if edge gone
+      Stage 2 (kickoff):      unconditional force-close
+    """
+    if not bet.kickoff_utc:
+        return "price_check"
+
+    kickoff = bet.kickoff_utc
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+    minutes_to_kickoff = (kickoff - now).total_seconds() / 60
+
+    # Stage 2: hard force-close
+    if minutes_to_kickoff <= settings.force_close_minutes_before_kickoff:
+        return "kickoff"
+
+    # Stage 1: lineup check (runs once per bet)
+    if minutes_to_kickoff <= settings.lineup_check_minutes_before_kickoff and not bet.lineup_checked:
+        return "lineup_check"
+
+    return "price_check"  # sentinel: caller checks TP/SL against live price
 
 
 async def _get_current_bid(bet: BetORM) -> float | None:
@@ -138,6 +158,105 @@ async def _get_current_bid(bet: BetORM) -> float | None:
         return bid
 
     return None
+
+
+# ── Lineup check (Stage 1) ────────────────────────────────────────────────────
+
+async def _run_lineup_check(db, bet: BetORM) -> bool:
+    """
+    Fetch confirmed lineups, recalculate EV with lineup-adjusted probabilities.
+    Returns True if the position should be closed (edge is gone), False to hold.
+    No-ops gracefully on any failure (returns False = hold).
+    """
+    try:
+        async with FootballAPIClient() as client:
+            lineups = await client.get_lineups(int(bet.match_id))
+
+        if not lineups.get("home") and not lineups.get("away"):
+            log.debug("lineups_not_published_yet", match_id=bet.match_id)
+            return False
+
+        # Load the original stored prediction for this match
+        from sqlalchemy import select as sa_select
+        result = await db.execute(
+            sa_select(PredictionORM)
+            .where(PredictionORM.match_id == bet.match_id)
+            .order_by(PredictionORM.predicted_at.desc())
+            .limit(1)
+        )
+        pred_orm = result.scalar_one_or_none()
+
+        if pred_orm is None:
+            log.debug("no_stored_prediction", match_id=bet.match_id)
+            return False
+
+        base_pred = ModelPrediction(
+            match_id=pred_orm.match_id,
+            probabilities=OutcomeProbabilities(
+                home=pred_orm.prob_home,
+                draw=pred_orm.prob_draw,
+                away=pred_orm.prob_away,
+                confidence=pred_orm.confidence,
+            ),
+            model_version=pred_orm.model_version,
+        )
+
+        updated_pred = adjust_prediction_for_lineups(base_pred, lineups)
+
+        # Get current market ask price for the token
+        current_ask = _get_current_ask(bet)
+        if current_ask is None or current_ask <= 0:
+            return False
+
+        # Recalculate EV with updated model probabilities
+        from sporting_edge.models.schemas import Outcome
+        from sporting_edge.agents.odds_analyzer import calculate_ev
+        model_prob = updated_pred.probabilities.for_outcome(Outcome(bet.outcome))
+        if bet.side.upper() == "NO":
+            model_prob = 1.0 - model_prob
+
+        ev_current = calculate_ev(model_prob, current_ask)
+        threshold = (
+            settings.min_ev_threshold if settings.paper_trading
+            else settings.min_ev_threshold_live
+        )
+
+        log.info(
+            "lineup_check_result",
+            bet_id=str(bet.id)[:8],
+            ev_current=f"{ev_current:.3f}",
+            threshold=threshold,
+            close=ev_current < threshold,
+            lineup_factors=updated_pred.factors_used[-3:],
+        )
+
+        return ev_current < threshold
+
+    except Exception as exc:
+        log.warning("lineup_check_error", bet_id=str(bet.id)[:8], error=str(exc))
+        return False
+
+
+def _get_current_ask(bet: BetORM) -> float | None:
+    """Best ask for the bet's token — used for EV recalculation."""
+    if not bet.token_id:
+        return None
+
+    streamer = get_streamer()
+    if streamer:
+        snap = streamer.get_cached_book(bet.token_id, max_age_seconds=30.0)
+        if snap and snap.best_ask:
+            return snap.best_ask
+
+    return fetch_token_best_ask(bet.token_id)
+
+
+async def _mark_lineup_checked(db, bet: BetORM) -> None:
+    await db.execute(
+        update(BetORM).where(BetORM.id == bet.id).values(lineup_checked=True)
+    )
+    await db.commit()
+    log.debug("lineup_checked_marked", bet_id=str(bet.id)[:8])
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────

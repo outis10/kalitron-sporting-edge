@@ -15,7 +15,7 @@ No ML framework needed — pure NumPy/SciPy. Fast, explainable, backtestable.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -327,6 +327,180 @@ def _build_reasoning(
         f"Dixon-Coles Poisson model: {home} (λ={home_lambda:.2f}) vs {away} (λ={away_lambda:.2f}). "
         f"1X2: {p_home:.1%} / {p_draw:.1%} / {p_away:.1%}. "
         f"Factors: {', '.join(factors)}."
+    )
+
+
+# ── Lineup adjustment ────────────────────────────────────────────────────────
+
+@dataclass
+class LineupAdjustment:
+    """Multiplicative factors to apply to team strength after lineup analysis."""
+    home_attack: float = 1.0
+    home_defence: float = 1.0
+    away_attack: float = 1.0
+    away_defence: float = 1.0
+    factors: list[str] = field(default_factory=list)
+
+    @property
+    def has_adjustments(self) -> bool:
+        return any(
+            v != 1.0
+            for v in (self.home_attack, self.home_defence, self.away_attack, self.away_defence)
+        )
+
+
+def _extract_position(player_str: str) -> str:
+    """
+    Parse position code from 'Player Name (POS)' string.
+    API-Football uses: G=Goalkeeper, D=Defender, M=Midfielder, F=Forward
+    """
+    if "(" in player_str and ")" in player_str:
+        return player_str.rsplit("(", 1)[-1].rstrip(")").strip().upper()
+    return "?"
+
+
+def _lineup_adjustments(lineups: dict[str, list[str]]) -> LineupAdjustment:
+    """
+    Derive strength multipliers from confirmed starting XIs.
+
+    Heuristics (conservative — refined once real data accumulates):
+      - No GK listed → -15% defence (emergency keeper)
+      - No forwards listed → -10% attack
+      - Fewer than 10 players → data quality issue, -5% both directions
+    """
+    adj = LineupAdjustment()
+
+    for side in ("home", "away"):
+        players = lineups.get(side, [])
+        if not players:
+            continue
+
+        positions = [_extract_position(p) for p in players]
+        n = len(players)
+
+        # Incomplete lineup — data quality penalty
+        if n < 10:
+            penalty = 0.95
+            if side == "home":
+                adj.home_attack *= penalty
+                adj.home_defence *= penalty
+                adj.factors.append(f"home_lineup_incomplete({n})")
+            else:
+                adj.away_attack *= penalty
+                adj.away_defence *= penalty
+                adj.factors.append(f"away_lineup_incomplete({n})")
+            continue
+
+        has_gk = "G" in positions
+        has_forward = any(p in ("F", "S", "FW", "CF", "ST") for p in positions)
+
+        if not has_gk:
+            if side == "home":
+                adj.home_defence *= 0.85
+                adj.factors.append("home_no_gk")
+            else:
+                adj.away_defence *= 0.85
+                adj.factors.append("away_no_gk")
+
+        if not has_forward:
+            if side == "home":
+                adj.home_attack *= 0.90
+                adj.factors.append("home_no_forwards")
+            else:
+                adj.away_attack *= 0.90
+                adj.factors.append("away_no_forwards")
+
+    return adj
+
+
+def adjust_prediction_for_lineups(
+    base_pred: "ModelPrediction",
+    lineups: dict[str, list[str]],
+) -> "ModelPrediction":
+    """
+    Scale an existing ModelPrediction using lineup-derived strength multipliers.
+
+    Used by PositionManager at the lineup-check stage: avoids re-fetching
+    team form data by working directly from the stored prediction probabilities.
+    """
+    adj = _lineup_adjustments(lineups)
+
+    if not adj.has_adjustments:
+        return base_pred
+
+    p_home = base_pred.probabilities.home
+    p_draw = base_pred.probabilities.draw
+    p_away = base_pred.probabilities.away
+
+    # Net home strength = attack * defence-superiority-over-away
+    home_net = adj.home_attack * adj.home_defence
+    away_net = adj.away_attack * adj.away_defence
+
+    p_home_adj = p_home * home_net
+    p_away_adj = p_away * away_net
+    # Draw is less sensitive to individual player changes
+    p_draw_adj = p_draw
+
+    total = p_home_adj + p_draw_adj + p_away_adj
+
+    return ModelPrediction(
+        match_id=base_pred.match_id,
+        probabilities=OutcomeProbabilities(
+            home=round(p_home_adj / total, 4),
+            draw=round(p_draw_adj / total, 4),
+            away=round(p_away_adj / total, 4),
+            confidence=round(base_pred.probabilities.confidence * 0.95, 3),
+        ),
+        model_version=f"{base_pred.model_version}+lineup",
+        factors_used=list(base_pred.factors_used) + adj.factors,
+        reasoning=f"{base_pred.reasoning} | Lineup: {adj.factors}",
+    )
+
+
+def predict_with_lineups(match: "Match", lineups: dict[str, list[str]]) -> "ModelPrediction":
+    """
+    Full model run with lineup adjustments applied to λ before the Poisson matrix.
+    Use this when the full Match (with form data) is available.
+    """
+    prior = LEAGUE_PRIORS.get(match.league.id, LeaguePrior())
+    factors: list[str] = []
+
+    home_lambda, away_lambda, data_quality = _estimate_expected_goals(
+        match.home_form, match.away_form, prior, factors
+    )
+
+    adj = _lineup_adjustments(lineups)
+    if adj.has_adjustments:
+        home_lambda = max(0.2, min(home_lambda * adj.home_attack / max(adj.away_defence, 0.5), 5.0))
+        away_lambda = max(0.2, min(away_lambda * adj.away_attack / max(adj.home_defence, 0.5), 5.0))
+        factors.extend(adj.factors)
+        factors.append(f"λ_home_adj={home_lambda:.2f}")
+        factors.append(f"λ_away_adj={away_lambda:.2f}")
+
+    home_probs, draw_prob, away_probs = _poisson_matrix(home_lambda, away_lambda)
+
+    if match.h2h and match.h2h.total_matches >= H2H_WEIGHT_THRESHOLD:
+        home_probs, draw_prob, away_probs = _apply_h2h_adjustment(
+            home_probs, draw_prob, away_probs, match.h2h, factors
+        )
+
+    confidence = _compute_confidence(match.home_form, match.away_form, match.h2h, data_quality)
+    if adj.has_adjustments:
+        confidence *= 0.95
+
+    return ModelPrediction(
+        match_id=match.match_id,
+        probabilities=OutcomeProbabilities(
+            home=round(home_probs, 4),
+            draw=round(draw_prob, 4),
+            away=round(away_probs, 4),
+            confidence=round(confidence, 3),
+        ),
+        model_version="v1-dixon-coles+lineup",
+        factors_used=factors,
+        reasoning=_build_reasoning(
+            match, home_lambda, away_lambda, home_probs, draw_prob, away_probs, factors
+        ),
     )
 
 
