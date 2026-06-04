@@ -1,6 +1,6 @@
 """Shared test fixtures."""
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sporting_edge.models.schemas import (
     HeadToHead, League, Match, MatchStatus, Team, TeamForm,
@@ -61,7 +61,7 @@ def sample_match(sample_league, america_form, chivas_form, h2h_balanced):
         league=sample_league,
         home_team=Team(id=1, name="Club America"),
         away_team=Team(id=2, name="Chivas Guadalajara"),
-        kickoff_utc=datetime(2025, 5, 1, 20, 0, tzinfo=timezone.utc),
+        kickoff_utc=datetime.now(tz=timezone.utc) + timedelta(hours=24),
         status=MatchStatus.SCHEDULED,
         home_form=america_form,
         away_form=chivas_form,

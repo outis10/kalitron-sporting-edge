@@ -146,8 +146,9 @@ def _evaluate_opportunity(
         return None
     ev = (model_prob / market_prob) - 1.0
 
-    # Filter 4: EV threshold
-    if ev < settings.min_ev_threshold:
+    # Filter 4: EV threshold (mode- and liquidity-aware)
+    threshold = _ev_threshold(odds.liquidity)
+    if ev < threshold:
         # Check if the NO side has edge (model says outcome is LESS likely)
         # e.g. model says 20% but market prices it at 65% → bet NO
         no_market_prob = odds.no_price
@@ -159,7 +160,7 @@ def _evaluate_opportunity(
         model_no_prob = 1.0 - model_prob
         ev_no = (model_no_prob / no_market_prob) - 1.0
 
-        if ev_no < settings.min_ev_threshold:
+        if ev_no < threshold:
             return None
 
         # Use NO side
@@ -182,6 +183,24 @@ def _evaluate_opportunity(
         edge=edge,
         signal_strength=_classify_strength(ev),
     )
+
+
+def _ev_threshold(liquidity: float) -> float:
+    """
+    Return the EV threshold for the current trading mode and market liquidity.
+
+    Paper/backtest: always the base threshold (5%) so the full signal
+    distribution is visible for research.
+
+    Live: stricter threshold (8%) to absorb real-world frictions (spread,
+    slippage, model error). Markets with liquidity between MIN_MARKET_LIQUIDITY
+    and LOW_LIQUIDITY_THRESHOLD get an even higher bar (12%).
+    """
+    if settings.paper_trading:
+        return settings.min_ev_threshold
+    if liquidity < settings.low_liquidity_threshold:
+        return settings.min_ev_threshold_low_liquidity
+    return settings.min_ev_threshold_live
 
 
 def _classify_strength(ev: float) -> SignalStrength:
