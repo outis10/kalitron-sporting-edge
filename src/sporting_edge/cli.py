@@ -80,10 +80,13 @@ async def _run_pipeline(league_ids):
 
 async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
     """
-    Seed mock Polymarket odds into the DB so the full pipeline can be tested
-    without a real Polymarket API key or live markets.
+    Seed mock Polymarket odds into the DB for end-to-end paper trading tests.
 
-    For each match that has a prediction:
+    If no matches/predictions exist yet (off-season or first run), creates
+    synthetic fixtures with realistic probabilities so the full pipeline
+    can be exercised without real API-Football data or live Polymarket markets.
+
+    For each match with a prediction:
       - Shifts kickoff to 4 hours from now (inside the 30min-48h window)
       - Creates a market_odds row per outcome (home/draw/away) where:
           yes_price = model_prob * (1 - ev_discount)   → intentional underpricing
@@ -96,7 +99,9 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
     from sqlalchemy import select, update
 
     from sporting_edge.config.logging import configure_logging
-    from sporting_edge.db.models import MarketOddsORM, MatchORM, PredictionORM
+    from sporting_edge.db.models import (
+        LeagueORM, MarketOddsORM, MatchORM, PredictionORM, TeamORM,
+    )
     from sporting_edge.db.session import AsyncSessionLocal
 
     configure_logging()
@@ -112,8 +117,11 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
         rows = result.all()
 
         if not rows:
-            print("No predictions found — run 'sporting-edge run' first.")
-            return
+            print("No predictions found — creating synthetic test fixtures...")
+            rows = await _seed_test_fixtures(db, future_kickoff)
+            if not rows:
+                print("❌ Could not create test fixtures. Check DB connection.")
+                return
 
         inserted = 0
         for pred, match in rows:
@@ -164,6 +172,78 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
     print(f"   Kickoff shifted to {future_kickoff.strftime('%H:%M UTC')} (4h from now)")
     print(f"   EV discount applied: {ev_discount:.0%}")
     print(f"\n   Now run: sporting-edge run")
+
+
+async def _seed_test_fixtures(db, kickoff) -> list:
+    """
+    Create 3 synthetic EPL fixtures with predictions for off-season dry-run testing.
+    Returns list of (PredictionORM, MatchORM) tuples.
+    """
+    import uuid
+    from datetime import timezone
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sporting_edge.db.models import LeagueORM, MatchORM, PredictionORM, TeamORM
+
+    # Ensure EPL league row exists
+    await db.execute(
+        pg_insert(LeagueORM).values(
+            id=39, name="Premier League", country="England", season=2024
+        ).on_conflict_do_nothing()
+    )
+
+    TEST_FIXTURES = [
+        dict(id="TEST-001", home_id=33, home="Manchester United",
+             away_id=40, away="Liverpool",
+             p_home=0.35, p_draw=0.25, p_away=0.40),
+        dict(id="TEST-002", home_id=50, home="Manchester City",
+             away_id=47, away="Tottenham",
+             p_home=0.55, p_draw=0.25, p_away=0.20),
+        dict(id="TEST-003", home_id=42, home="Arsenal",
+             away_id=49, away="Chelsea",
+             p_home=0.40, p_draw=0.30, p_away=0.30),
+    ]
+
+    rows = []
+    for fix in TEST_FIXTURES:
+        for team_id, team_name in ((fix["home_id"], fix["home"]), (fix["away_id"], fix["away"])):
+            await db.execute(
+                pg_insert(TeamORM).values(id=team_id, name=team_name)
+                .on_conflict_do_nothing()
+            )
+
+        await db.execute(
+            pg_insert(MatchORM).values(
+                id=fix["id"], league_id=39,
+                home_team_id=fix["home_id"], away_team_id=fix["away_id"],
+                kickoff_utc=kickoff, status="scheduled",
+            ).on_conflict_do_update(
+                index_elements=["id"],
+                set_={"kickoff_utc": kickoff},
+            )
+        )
+
+        pred_id = uuid.uuid4()
+        await db.execute(
+            pg_insert(PredictionORM).values(
+                id=pred_id, match_id=fix["id"],
+                model_version="v1-dixon-coles",
+                prob_home=fix["p_home"], prob_draw=fix["p_draw"], prob_away=fix["p_away"],
+                confidence=0.72,
+            ).on_conflict_do_nothing()
+        )
+
+        from sqlalchemy import select
+        pred = (await db.execute(
+            select(PredictionORM).where(PredictionORM.match_id == fix["id"])
+        )).scalar_one()
+        match = (await db.execute(
+            select(MatchORM).where(MatchORM.id == fix["id"])
+        )).scalar_one()
+        rows.append((pred, match))
+
+    await db.commit()
+    print(f"   Created {len(rows)} synthetic EPL fixtures (Man Utd vs Liverpool, City vs Spurs, Arsenal vs Chelsea)")
+    return rows
 
 
 def _apply_migrations():
