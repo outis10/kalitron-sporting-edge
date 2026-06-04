@@ -1,7 +1,7 @@
 # ADR-006: EV threshold diferenciado paper/live
 
 **Fecha:** 2026-06-04
-**Estado:** Propuesto
+**Estado:** Aceptado
 
 ## Contexto
 
