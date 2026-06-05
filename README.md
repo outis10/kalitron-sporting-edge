@@ -89,10 +89,16 @@ EXECUTE_TRADES=false
 
 # Risk
 BANKROLL_USD=1000.0
-MAX_KELLY_FRACTION=0.25     # Quarter Kelly
-MAX_BET_PCT_BANKROLL=0.02   # Hard cap: 2% per bet
-MIN_EV_THRESHOLD=0.05       # 5% minimum edge to signal
-MIN_MARKET_LIQUIDITY=5000.0 # $5k minimum market liquidity
+MAX_KELLY_FRACTION=0.25              # Quarter Kelly
+MAX_BET_PCT_BANKROLL=0.02            # Hard cap: 2% per bet
+MIN_EV_THRESHOLD=0.05                # Paper trading / backtesting
+MIN_EV_THRESHOLD_LIVE=0.08           # Production (absorbs spread + slippage + model error)
+MIN_EV_THRESHOLD_LOW_LIQUIDITY=0.12  # Markets with $5k–$10k liquidity in live mode
+MIN_MARKET_LIQUIDITY=5000.0          # $5k minimum market liquidity
+
+# Position management
+LINEUP_CHECK_MINUTES_BEFORE_KICKOFF=65  # Stage 1: fetch lineups + recalculate EV
+FORCE_CLOSE_MINUTES_BEFORE_KICKOFF=30   # Stage 2: unconditional force-close
 
 # Leagues (API-Football IDs)
 ACTIVE_LEAGUES=39,140,2     # EPL, La Liga, Champions League
