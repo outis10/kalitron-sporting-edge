@@ -23,7 +23,10 @@ from sporting_edge.tools.polymarket_streamer import init_streamer, get_streamer
 configure_logging()
 log = get_logger(__name__)
 
-scheduler = AsyncIOScheduler(timezone="UTC")
+scheduler = AsyncIOScheduler(
+    timezone="UTC",
+    job_defaults={"misfire_grace_time": 60},  # tolerate up to 60s late start
+)
 
 
 @asynccontextmanager
