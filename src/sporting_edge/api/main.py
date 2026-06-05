@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sporting_edge.agents.bet_settler import run_bet_settler
 from sporting_edge.agents.clv_tracker import run_clv_tracker
 from sporting_edge.agents.position_manager import run_position_manager
-from sporting_edge.api.routers import markets, pipeline, positions
+from sporting_edge.api.routers import markets, pipeline, positions, standings
 from sporting_edge.config import settings
 from sporting_edge.config.logging import configure_logging, get_logger
 from sporting_edge.graph.orchestrator import run_pipeline
@@ -148,6 +148,7 @@ app.add_middleware(
 app.include_router(pipeline.router)
 app.include_router(markets.router)
 app.include_router(positions.router)
+app.include_router(standings.router)
 
 
 @app.get("/health")
