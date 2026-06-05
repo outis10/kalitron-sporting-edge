@@ -33,15 +33,27 @@ from sporting_edge.tools.polymarket_tools import GammaClient, parse_market_to_od
 
 log = get_logger(__name__)
 
-# Season for API-Football queries.
+# Default season for club leagues.
 # FIXME(paid-api): Revert to dynamic season once we upgrade to a paid API-Football plan.
 #   Free tier only covers 2022–2024. When upgrading:
 #   1. Uncomment the dynamic season logic below
 #   2. Remove the date-shifting block in collect_data() (~15 lines below)
 #   3. The dynamic logic:
 #        today = date.today()
-#        CURRENT_SEASON = today.year if today.month >= 8 else today.year - 1
-CURRENT_SEASON = 2024
+#        DEFAULT_SEASON = today.year if today.month >= 8 else today.year - 1
+DEFAULT_SEASON = 2024
+
+# Per-league season overrides — add here when a competition uses a different year.
+# International tournaments run on the calendar year, not the Aug-May club season.
+SEASON_OVERRIDE: dict[int, int] = {
+    1: 2026,  # FIFA World Cup 2026
+}
+
+
+def _season_for(league_id: int) -> int:
+    """Return the correct API-Football season for a given league."""
+    return SEASON_OVERRIDE.get(league_id, DEFAULT_SEASON)
+
 
 # How many days ahead to look for fixtures
 LOOKAHEAD_DAYS = 7
@@ -82,13 +94,13 @@ async def collect_data(league_ids: list[int]) -> tuple[list[Match], list[MatchOd
     today = date.today()
     to_date = today + timedelta(days=LOOKAHEAD_DAYS)
 
-    # If using a historical season for testing, shift dates into that season's range
-    if CURRENT_SEASON < today.year - 1:
-        # Map today's month/day into the historical season
+    # Date-shifting for club leagues using historical season (free-tier workaround).
+    # World Cup (league=1) uses season=2026 which is current — no shifting needed.
+    if DEFAULT_SEASON < today.year - 1:
         try:
-            from_date = date(CURRENT_SEASON + 1, today.month, today.day)
+            from_date = date(DEFAULT_SEASON + 1, today.month, today.day)
         except ValueError:
-            from_date = date(CURRENT_SEASON + 1, today.month, 28)
+            from_date = date(DEFAULT_SEASON + 1, today.month, 28)
         to_date = from_date + timedelta(days=LOOKAHEAD_DAYS)
     else:
         from_date = today
@@ -99,11 +111,15 @@ async def collect_data(league_ids: list[int]) -> tuple[list[Match], list[MatchOd
         all_matches: list[Match] = []
         for league_id in league_ids:
             try:
+                season = _season_for(league_id)
+                # World Cup uses real current dates; club leagues use shifted dates
+                league_from = today if season >= today.year else from_date
+                league_to = today + timedelta(days=LOOKAHEAD_DAYS) if season >= today.year else to_date
                 matches = await football_client.get_fixtures(
                     league_id=league_id,
-                    season=CURRENT_SEASON,
-                    from_date=from_date,
-                    to_date=to_date,
+                    season=season,
+                    from_date=league_from,
+                    to_date=league_to,
                 )
                 all_matches.extend(matches)
             except Exception as exc:
@@ -203,11 +219,11 @@ async def _enrich_matches(
             try:
                 # Sequential to avoid rate-limit; 3 requests per match
                 home_form = await client.get_team_statistics(
-                    match.home_team.id, match.league.id, CURRENT_SEASON
+                    match.home_team.id, match.league.id, _season_for(match.league.id)
                 )
                 await asyncio.sleep(7)  # ~8-9 req/min max
                 away_form = await client.get_team_statistics(
-                    match.away_team.id, match.league.id, CURRENT_SEASON
+                    match.away_team.id, match.league.id, _season_for(match.league.id)
                 )
                 await asyncio.sleep(7)
                 h2h = await client.get_head_to_head(match.home_team.id, match.away_team.id)

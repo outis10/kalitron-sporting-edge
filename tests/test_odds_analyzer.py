@@ -183,3 +183,22 @@ def test_signal_low_liquidity_live_requires_higher_ev(sample_match):
          patch.object(mod.settings, "low_liquidity_threshold", 10_000):
         assert _evaluate_opportunity(sample_match, pred, odds_pass) is not None
         assert _evaluate_opportunity(sample_match, pred, odds_fail) is None
+
+
+# ── _season_for (data_collector) ─────────────────────────────────────────────
+
+def test_season_for_world_cup_returns_2026():
+    from sporting_edge.agents.data_collector import _season_for
+    assert _season_for(1) == 2026
+
+
+def test_season_for_club_league_returns_default():
+    from sporting_edge.agents.data_collector import _season_for, DEFAULT_SEASON
+    assert _season_for(39) == DEFAULT_SEASON   # EPL
+    assert _season_for(140) == DEFAULT_SEASON  # La Liga
+    assert _season_for(2) == DEFAULT_SEASON    # UCL
+
+
+def test_season_for_unknown_league_returns_default():
+    from sporting_edge.agents.data_collector import _season_for, DEFAULT_SEASON
+    assert _season_for(999) == DEFAULT_SEASON
