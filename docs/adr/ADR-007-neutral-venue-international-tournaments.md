@@ -1,7 +1,7 @@
 # ADR-007: Neutral venue en torneos internacionales
 
 **Fecha:** 2026-06-05
-**Estado:** Propuesto
+**Estado:** Aceptado
 
 ## Contexto
 
