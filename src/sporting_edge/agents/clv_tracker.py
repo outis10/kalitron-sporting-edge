@@ -148,16 +148,32 @@ async def _load_bets_for_clv(
     cutoff: datetime,
 ) -> list[BetORM]:
     """
-    Open/paper bets whose kickoff is between now and cutoff,
-    and whose closing_price has not yet been captured.
+    Bets that need a closing price captured.
+
+    Includes:
+    - Open/paper bets whose kickoff is within CLV_WINDOW_MINUTES (normal path)
+    - Bets force-closed by kickoff that still have closing_price IS NULL
+      (covers the race where CLV tracker failed before force-close ran)
     """
+    from sqlalchemy import or_, and_
+
     result = await db.execute(
         select(BetORM).where(
-            BetORM.status.in_(["open", "paper"]),
-            BetORM.kickoff_utc.is_not(None),
-            BetORM.kickoff_utc > now,
-            BetORM.kickoff_utc <= cutoff,
             BetORM.closing_price.is_(None),
+            BetORM.kickoff_utc.is_not(None),
+            or_(
+                # Normal path: still open, kickoff approaching
+                and_(
+                    BetORM.status.in_(["open", "paper"]),
+                    BetORM.kickoff_utc > now,
+                    BetORM.kickoff_utc <= cutoff,
+                ),
+                # Recovery path: force-closed by kickoff but CLV never captured
+                and_(
+                    BetORM.status == "closed",
+                    BetORM.close_reason == "kickoff",
+                ),
+            ),
         )
     )
     return list(result.scalars().all())
