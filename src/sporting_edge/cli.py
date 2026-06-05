@@ -37,6 +37,8 @@ def main():
     # Inject mock market odds for testing (no real Polymarket needed)
     mock_p = sub.add_parser("mock-odds", help="Inject fake Polymarket odds to test full pipeline")
     mock_p.add_argument("--ev", type=float, default=0.12, help="Target EV discount (default 0.12 = 12%%)")
+    mock_p.add_argument("--kickoff-minutes", type=int, default=240,
+                        help="Minutes until mock kickoff (default 240=4h). Use 70 to demo full cycle in ~40 min")
 
     args = parser.parse_args()
 
@@ -70,7 +72,7 @@ def main():
         _apply_migrations()
 
     elif args.command == "mock-odds":
-        asyncio.run(_inject_mock_odds(args.ev))
+        asyncio.run(_inject_mock_odds(args.ev, args.kickoff_minutes))
 
     else:
         parser.print_help()
@@ -86,7 +88,7 @@ async def _run_pipeline(league_ids):
         print(f"⚠️  Error: {state.error}")
 
 
-async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
+async def _inject_mock_odds(ev_discount: float = 0.12, kickoff_minutes: int = 240) -> None:
     """
     Seed mock Polymarket odds into the DB for end-to-end paper trading tests.
 
@@ -114,7 +116,7 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
 
     configure_logging()
 
-    future_kickoff = datetime.now(tz=timezone.utc) + timedelta(hours=4)
+    future_kickoff = datetime.now(tz=timezone.utc) + timedelta(minutes=kickoff_minutes)
 
     async with AsyncSessionLocal() as db:
         # Load predictions with their matches
@@ -177,9 +179,9 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
         await db.commit()
 
     print(f"✅ Mock odds injected: {len(rows)} matches × 3 outcomes = {inserted} rows")
-    print(f"   Kickoff shifted to {future_kickoff.strftime('%H:%M UTC')} (4h from now)")
+    print(f"   Kickoff at {future_kickoff.strftime('%H:%M UTC')} ({kickoff_minutes} min from now)")
     print(f"   EV discount applied: {ev_discount:.0%}")
-    print(f"\n   Now run: sporting-edge run")
+    print(f"\n   Now run: sporting-edge run --from-db")
 
 
 async def _run_pipeline_from_db(league_ids: list[int] | None = None) -> None:
