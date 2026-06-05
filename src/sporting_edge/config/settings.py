@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # ── Leagues ──────────────────────────────────────────────────────────────
     # Comma-separated API-Football league IDs
-    active_leagues: str = "39,140,2"        # EPL=39, La Liga=140, UCL=2
+    active_leagues: str = "39,140,2,1"      # EPL=39, La Liga=140, UCL=2, World Cup=1
 
     @property
     def active_league_ids(self) -> list[int]:

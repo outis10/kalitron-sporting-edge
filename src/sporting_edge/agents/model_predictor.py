@@ -50,6 +50,15 @@ MAX_GOALS_MATRIX = 10       # Poisson matrix size (goals 0..10)
 MIN_CONFIDENCE = 0.45       # floor for confidence score
 H2H_WEIGHT_THRESHOLD = 5    # minimum H2H matches to apply H2H adjustment
 
+# Leagues where matches are played on neutral ground — no real home advantage.
+# API-Football assigns home/away by draw order, not geography.
+# See ADR-007: docs/adr/ADR-007-neutral-venue-international-tournaments.md
+NEUTRAL_VENUE_LEAGUES: frozenset[int] = frozenset({
+    1,   # FIFA World Cup
+    4,   # UEFA European Championship
+    5,   # UEFA Nations League (final four)
+})
+
 
 @dataclass
 class LeaguePrior:
@@ -100,6 +109,19 @@ def predict_match(match: Match) -> ModelPrediction:
     """
     prior = LEAGUE_PRIORS.get(match.league.id, LeaguePrior())
     factors: list[str] = []
+
+    # Neutral venue leagues have no real home advantage (ADR-007).
+    # Also equalise avg_home_goals / avg_away_goals since those priors embed
+    # home-ground effects from club football data.
+    is_neutral = match.league.id in NEUTRAL_VENUE_LEAGUES
+    if is_neutral:
+        avg_goals = (prior.avg_home_goals + prior.avg_away_goals) / 2
+        prior = LeaguePrior(
+            avg_home_goals=avg_goals,
+            avg_away_goals=avg_goals,
+            home_advantage=0.0,
+        )
+        factors.append("venue_type=neutral")
 
     # ── 1. Estimate expected goals ───────────────────────────────────────────
     home_lambda, away_lambda, data_quality = _estimate_expected_goals(
@@ -464,6 +486,15 @@ def predict_with_lineups(match: "Match", lineups: dict[str, list[str]]) -> "Mode
     """
     prior = LEAGUE_PRIORS.get(match.league.id, LeaguePrior())
     factors: list[str] = []
+
+    if match.league.id in NEUTRAL_VENUE_LEAGUES:
+        avg_goals = (prior.avg_home_goals + prior.avg_away_goals) / 2
+        prior = LeaguePrior(
+            avg_home_goals=avg_goals,
+            avg_away_goals=avg_goals,
+            home_advantage=0.0,
+        )
+        factors.append("venue_type=neutral")
 
     home_lambda, away_lambda, data_quality = _estimate_expected_goals(
         match.home_form, match.away_form, prior, factors

@@ -1,7 +1,8 @@
 # SDD — EPIC-002: World Cup 2026 Integration
 
 **Fecha:** 2026-06-05
-**Estado:** Propuesto
+**Completado:** 2026-06-05
+**Estado:** Completado
 **Autor:** outis10
 
 ---
@@ -22,12 +23,12 @@ acerquen las fechas.
 
 ### Incluido
 
-| # | Issue | Descripción | Prioridad |
-|---|-------|-------------|-----------|
-| 1 | #14 | Per-league season config | Alta |
-| 2 | #15 | Activar league_id=1 + validar matching Polymarket | Alta |
-| 3 | #16 | Neutral venue — eliminar home advantage en torneos internacionales | Media |
-| 4 | #17 | Endpoint `/standings` para contexto de fase de grupos | Media |
+| # | Issue | PR | Descripción | Estado |
+|---|-------|----|-------------|--------|
+| 1 | [#20](https://github.com/outis10/kalitron-sporting-edge/issues/20) | [#24](https://github.com/outis10/kalitron-sporting-edge/pull/24) | Per-league season config | ✅ Merged |
+| 2 | [#21](https://github.com/outis10/kalitron-sporting-edge/issues/21) | [#25](https://github.com/outis10/kalitron-sporting-edge/pull/25) | Activar league_id=1 + validar matching Polymarket | ✅ Merged |
+| 3 | [#22](https://github.com/outis10/kalitron-sporting-edge/issues/22) | [#25](https://github.com/outis10/kalitron-sporting-edge/pull/25) | Neutral venue — eliminar home advantage en torneos internacionales | ✅ Merged |
+| 4 | [#23](https://github.com/outis10/kalitron-sporting-edge/issues/23) | [#26](https://github.com/outis10/kalitron-sporting-edge/pull/26) | Endpoint `/standings` para contexto de fase de grupos | ✅ Merged |
 
 ### Fuera de alcance (EPIC futuro)
 
@@ -226,13 +227,12 @@ válido en la tabla `leagues` (FK sin restricción de dominio).
 
 ## 7. Definición de Done (DoD)
 
-- [ ] Issues #14–#17 cerrados
-- [ ] `ACTIVE_LEAGUES=39,140,2,1` en `.env.example`
-- [ ] Tests unitarios actualizados: `_season_for()`, neutral venue flag
-- [ ] Pipeline completo ejecutado en dry-run con `league_id=1, season=2026`
-  y al menos 1 fixture retornado desde API-Football
-- [ ] Validación Polymarket documentada en issue #15 (positiva o con workaround)
-- [ ] ADR-007 actualizado a "Aceptado"
+- [x] Issues #20–#23 cerrados (PRs #24, #25, #26)
+- [x] `ACTIVE_LEAGUES=39,140,2,1` en `.env.example`
+- [x] Tests unitarios: `_season_for()`, neutral venue, standings parsing (100 tests total)
+- [x] ADR-007 actualizado a "Aceptado"
+- [ ] Pipeline dry-run con `league_id=1, season=2026` — pendiente (torneo arranca 11 jun)
+- [ ] Validación Polymarket matching — pendiente (mercados activos desde 11 jun)
 
 ---
 
@@ -241,3 +241,4 @@ válido en la tabla `leagues` (FK sin restricción de dominio).
 | Fecha | Cambio |
 |-------|--------|
 | 2026-06-05 | Documento inicial — análisis pre-implementación |
+| 2026-06-05 | EPIC completado — 4 issues entregados, 100 tests, ADR-007 aceptado |

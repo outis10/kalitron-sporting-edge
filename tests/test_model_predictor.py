@@ -8,6 +8,7 @@ from sporting_edge.agents.model_predictor import (
     _poisson_matrix,
     _estimate_expected_goals,
     LeaguePrior,
+    NEUTRAL_VENUE_LEAGUES,
 )
 from sporting_edge.agents.risk_manager import kelly_fraction
 from sporting_edge.models.schemas import Match, Outcome
@@ -76,3 +77,57 @@ def test_predict_match_factors_logged(sample_match):
 def test_predict_match_reasoning_non_empty(sample_match):
     pred = predict_match(sample_match)
     assert len(pred.reasoning) > 20
+
+
+# ── Neutral venue (World Cup / Euros) ─────────────────────────────────────────
+
+def _make_wc_match(home_id=10, away_id=11):
+    """World Cup match with equal-strength teams and no form data."""
+    from datetime import datetime, timedelta, timezone
+    from sporting_edge.models.schemas import League, Team
+    return Match(
+        match_id="wc-test-001",
+        league=League(id=1, name="FIFA World Cup", country="World", season=2026),
+        home_team=Team(id=home_id, name="Brazil"),
+        away_team=Team(id=away_id, name="Argentina"),
+        kickoff_utc=datetime.now(tz=timezone.utc) + timedelta(hours=24),
+        home_form=None,
+        away_form=None,
+        h2h=None,
+    )
+
+
+def test_neutral_venue_leagues_includes_world_cup():
+    assert 1 in NEUTRAL_VENUE_LEAGUES
+
+
+def test_neutral_venue_leagues_includes_euros():
+    assert 4 in NEUTRAL_VENUE_LEAGUES
+
+
+def test_wc_match_no_home_advantage():
+    """In a World Cup match with equal teams, home and away λ should be equal."""
+    match = _make_wc_match()
+    pred = predict_match(match)
+    # With no form data and no home advantage, probs should be symmetric
+    assert abs(pred.probabilities.home - pred.probabilities.away) < 0.01
+
+
+def test_wc_match_has_neutral_venue_factor():
+    """Prediction factors should include venue_type=neutral."""
+    match = _make_wc_match()
+    pred = predict_match(match)
+    assert any("neutral" in f for f in pred.factors_used)
+
+
+def test_club_match_has_home_advantage(sample_match):
+    """Club match (Liga MX) should have home team favoured due to home advantage."""
+    pred = predict_match(sample_match)
+    # With same prior, home should have slightly higher probability
+    assert pred.probabilities.home >= pred.probabilities.away
+
+
+def test_club_league_not_in_neutral_venues():
+    """Club leagues should NOT be in the neutral venue set."""
+    for league_id in (39, 140, 2, 262):  # EPL, La Liga, UCL, Liga MX
+        assert league_id not in NEUTRAL_VENUE_LEAGUES
