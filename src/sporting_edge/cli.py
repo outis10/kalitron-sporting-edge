@@ -16,6 +16,11 @@ def main():
     # Run pipeline once
     run_p = sub.add_parser("run", help="Run the full pipeline once")
     run_p.add_argument("--leagues", help="Comma-separated league IDs", default=None)
+    run_p.add_argument(
+        "--from-db",
+        action="store_true",
+        help="Skip DataCollector API calls — use matches+odds already in DB (for dry-run / off-season testing)",
+    )
 
     # Backtest
     bt_p = sub.add_parser("backtest", help="Run backtesting on a CSV file")
@@ -39,7 +44,10 @@ def main():
         league_ids = None
         if args.leagues:
             league_ids = [int(x) for x in args.leagues.split(",")]
-        asyncio.run(_run_pipeline(league_ids))
+        if getattr(args, "from_db", False):
+            asyncio.run(_run_pipeline_from_db(league_ids))
+        else:
+            asyncio.run(_run_pipeline(league_ids))
 
     elif args.command == "backtest":
         from sporting_edge.backtesting.engine import run_backtest
@@ -172,6 +180,140 @@ async def _inject_mock_odds(ev_discount: float = 0.12) -> None:
     print(f"   Kickoff shifted to {future_kickoff.strftime('%H:%M UTC')} (4h from now)")
     print(f"   EV discount applied: {ev_discount:.0%}")
     print(f"\n   Now run: sporting-edge run")
+
+
+async def _run_pipeline_from_db(league_ids: list[int] | None = None) -> None:
+    """
+    Run ModelPredictor → OddsAnalyzer → RiskManager → ExecutionAgent → ReportAgent
+    using matches and market_odds already stored in the DB.
+
+    Skips DataCollector entirely — useful for off-season dry-run testing after
+    running `sporting-edge mock-odds`.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from sporting_edge.config import settings
+    from sporting_edge.config.logging import configure_logging
+    from sporting_edge.db.models import LeagueORM, MarketOddsORM, MatchORM, TeamORM
+    from sporting_edge.db.session import AsyncSessionLocal
+    from sporting_edge.models.schemas import (
+        AgentState, HeadToHead, League, Match, MatchOdds, MatchStatus,
+        Outcome, Team, TeamForm,
+    )
+
+    configure_logging()
+
+    target_leagues = league_ids or settings.active_league_ids
+
+    async with AsyncSessionLocal() as db:
+        # Load upcoming matches from DB
+        now = datetime.now(tz=timezone.utc)
+        result = await db.execute(
+            select(MatchORM)
+            .where(MatchORM.kickoff_utc > now)
+            .order_by(MatchORM.kickoff_utc)
+        )
+        match_rows = list(result.scalars().all())
+
+        if not match_rows:
+            print("❌ No upcoming matches in DB. Run 'sporting-edge mock-odds' first.")
+            return
+
+        # Build Match schemas from ORM rows
+        matches: list[Match] = []
+        for row in match_rows:
+            home_result = await db.execute(
+                select(TeamORM).where(TeamORM.id == row.home_team_id)
+            )
+            away_result = await db.execute(
+                select(TeamORM).where(TeamORM.id == row.away_team_id)
+            )
+            league_result = await db.execute(
+                select(LeagueORM).where(LeagueORM.id == row.league_id)
+            )
+            home_team = home_result.scalar_one_or_none()
+            away_team = away_result.scalar_one_or_none()
+            league = league_result.scalar_one_or_none()
+
+            if not home_team or not away_team or not league:
+                continue
+
+            matches.append(Match(
+                match_id=row.id,
+                league=League(
+                    id=league.id, name=league.name,
+                    country=league.country, season=league.season,
+                ),
+                home_team=Team(id=home_team.id, name=home_team.name),
+                away_team=Team(id=away_team.id, name=away_team.name),
+                kickoff_utc=row.kickoff_utc,
+                status=MatchStatus.SCHEDULED,
+            ))
+
+        # Load corresponding market odds from DB
+        match_ids = [m.match_id for m in matches]
+        odds_result = await db.execute(
+            select(MarketOddsORM).where(MarketOddsORM.match_id.in_(match_ids))
+        )
+        odds_rows = list(odds_result.scalars().all())
+
+        odds: list[MatchOdds] = [
+            MatchOdds(
+                condition_id=row.condition_id,
+                market_question=row.market_question,
+                match_id=row.match_id,
+                outcome=Outcome(row.outcome),
+                yes_price=row.yes_price,
+                no_price=row.no_price,
+                volume_24h=row.volume_24h,
+                liquidity=row.liquidity,
+                yes_token_id=row.yes_token_id,
+                no_token_id=row.no_token_id,
+                fetched_at=row.fetched_at,
+            )
+            for row in odds_rows
+        ]
+
+    if not odds:
+        print("❌ No market odds in DB. Run 'sporting-edge mock-odds' first.")
+        return
+
+    print(f"📊 Loaded from DB: {len(matches)} matches, {len(odds)} odds snapshots")
+
+    # Build initial state with DB data and skip data_collector
+    initial_state = AgentState(
+        target_league_ids=target_leagues,
+        triggered_by="cli-from-db",
+        matches=matches,
+        odds=odds,
+        completed_nodes=["data_collector"],  # mark as already done
+    )
+
+    from sporting_edge.agents.model_predictor import model_predictor_node
+    from sporting_edge.agents.odds_analyzer import odds_analyzer_node
+    from sporting_edge.agents.risk_manager import risk_manager_node
+    from sporting_edge.agents.execution_agent import execution_agent_node
+    from sporting_edge.agents.report_agent import report_agent_node
+
+    state = initial_state
+    for node_fn, name in [
+        (model_predictor_node, "model_predictor"),
+        (odds_analyzer_node,   "odds_analyzer"),
+        (risk_manager_node,    "risk_manager"),
+        (execution_agent_node, "execution_agent"),
+        (report_agent_node,    "report_agent"),
+    ]:
+        if state.error:
+            print(f"⚠️  Stopping at {name}: {state.error}")
+            break
+        print(f"  → running {name}...")
+        state = await node_fn(state)
+
+    print(f"\n✅ Pipeline complete — {len(state.signals)} signals, {len(state.bets_placed)} bets placed (paper)")
+    if state.error:
+        print(f"⚠️  Error: {state.error}")
 
 
 async def _seed_test_fixtures(db, kickoff) -> list:
