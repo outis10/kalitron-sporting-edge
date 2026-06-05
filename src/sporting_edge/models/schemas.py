@@ -147,6 +147,25 @@ class MatchResult(BaseModel):
         return Outcome.DRAW
 
 
+# ── Standings Domain ─────────────────────────────────────────────────────────
+
+class GroupStanding(BaseModel):
+    """One team's row in a group-stage standings table."""
+    group: str
+    rank: int
+    team_id: int
+    team_name: str
+    points: int
+    played: int
+    won: int
+    drawn: int
+    lost: int
+    goals_for: int
+    goals_against: int
+    goal_diff: int
+    form: Optional[str] = None   # e.g. "WWDL" — last N results
+
+
 # ── Market / Odds Domain ─────────────────────────────────────────────────────
 
 class MatchOdds(BaseModel):

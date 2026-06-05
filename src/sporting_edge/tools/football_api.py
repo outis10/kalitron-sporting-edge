@@ -22,6 +22,7 @@ from tenacity import (
 from sporting_edge.config import settings
 from sporting_edge.config.logging import get_logger
 from sporting_edge.models.schemas import (
+    GroupStanding,
     HeadToHead,
     League,
     Match,
@@ -280,6 +281,49 @@ class FootballAPIClient:
             ]
 
         return result
+
+    async def get_standings(self, league_id: int, season: int) -> list[GroupStanding]:
+        """
+        Fetch group standings for a league/season.
+
+        Returns all teams sorted by group then rank. For knockout-only competitions
+        (UCL final stages) the response may be empty.
+
+        v3 response: [{league: {standings: [[{rank, team, points, ...}]]}}]
+        Each inner list is one group; outer list has multiple groups.
+        """
+        data = await self._get("/standings", {"league": league_id, "season": season})
+        resp = data.get("response", [])
+        if not resp:
+            return []
+
+        standings: list[GroupStanding] = []
+        league_block = resp[0].get("league", {}) if resp else {}
+        groups = league_block.get("standings", [])
+
+        for group_list in groups:
+            for row in group_list:
+                team = row.get("team", {})
+                all_stats = row.get("all", {})
+                goals = all_stats.get("goals", {})
+                standings.append(GroupStanding(
+                    group=row.get("group", ""),
+                    rank=row.get("rank", 0),
+                    team_id=team.get("id", 0),
+                    team_name=team.get("name", ""),
+                    points=row.get("points", 0),
+                    played=all_stats.get("played", 0),
+                    won=all_stats.get("win", 0),
+                    drawn=all_stats.get("draw", 0),
+                    lost=all_stats.get("lose", 0),
+                    goals_for=goals.get("for", 0),
+                    goals_against=goals.get("against", 0),
+                    goal_diff=row.get("goalsDiff", 0),
+                    form=row.get("form"),
+                ))
+
+        log.info("standings_fetched", league_id=league_id, teams=len(standings))
+        return standings
 
     async def get_injuries(self, fixture_id: int) -> list[str]:
         """Return list of injured player names for a fixture."""
