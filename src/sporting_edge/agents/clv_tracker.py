@@ -113,11 +113,22 @@ def _get_closing_price(bet: BetORM) -> float | None:
     Get the current best ask for the bet's token.
 
     Priority:
-      1. WebSocket streamer hot cache  (fresh within 30s)
-      2. CLOB REST orderbook
+      1. Mock token simulation (MOCK-* prefix — no real CLOB available)
+      2. WebSocket streamer hot cache  (fresh within 30s)
+      3. CLOB REST orderbook
     """
     if not bet.token_id:
         return None
+
+    # Mock tokens (from 'sporting-edge mock-odds') have no real CLOB data.
+    # Simulate a realistic closing price: entry ± small random drift so CLV
+    # has a plausible non-zero value for testing the full cycle.
+    if bet.token_id.startswith("MOCK-"):
+        import random
+        drift = random.uniform(-0.03, 0.06)   # slight positive bias like a real edge
+        closing = round(max(0.02, min(0.97, bet.entry_price + drift)), 4)
+        log.info("clv_mock_price_simulated", token_id=bet.token_id[:12], closing=closing)
+        return closing
 
     streamer = get_streamer()
     if streamer:
