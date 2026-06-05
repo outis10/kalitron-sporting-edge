@@ -137,13 +137,21 @@ async def _get_current_bid(bet: BetORM) -> float | None:
     Best bid = highest price a buyer will pay = what we'd receive if we SELL.
 
     Priority:
-      1. WebSocket streamer hot cache (fresh within 15s, zero latency)
-      2. CLOB REST orderbook for the single token (slower, always available)
+      1. Mock token simulation (MOCK-* — no real CLOB in paper testing)
+      2. WebSocket streamer hot cache (fresh within 15s, zero latency)
+      3. CLOB REST orderbook for the single token (slower, always available)
     """
     if not bet.token_id:
         return None
 
-    # 1. Try WebSocket streamer hot cache
+    # 1. Mock tokens have no real orderbook — simulate a bid slightly below entry
+    if bet.token_id.startswith("MOCK-"):
+        import random
+        bid = round(max(0.02, min(0.97, bet.entry_price + random.uniform(-0.04, 0.05))), 4)
+        log.debug("position_mock_bid_simulated", token_id=bet.token_id[:12], bid=bid)
+        return bid
+
+    # 2. Try WebSocket streamer hot cache
     streamer = get_streamer()
     if streamer:
         snap = streamer.get_cached_book(bet.token_id, max_age_seconds=15.0)
@@ -151,7 +159,7 @@ async def _get_current_bid(bet: BetORM) -> float | None:
             log.debug("position_price_from_ws", token_id=bet.token_id[:8], bid=snap.best_bid)
             return snap.best_bid
 
-    # 2. REST fallback — fetch orderbook for this single token from CLOB
+    # 3. REST fallback — fetch orderbook for this single token from CLOB
     log.debug("position_price_cache_miss_trying_rest", token_id=bet.token_id[:8])
     bid = fetch_token_best_bid(bet.token_id)
     if bid is not None:

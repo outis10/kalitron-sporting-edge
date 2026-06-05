@@ -156,6 +156,7 @@ async def _load_bets_for_clv(
       (covers the race where CLV tracker failed before force-close ran)
     """
     from sqlalchemy import or_, and_
+    from datetime import timedelta
 
     result = await db.execute(
         select(BetORM).where(
@@ -168,10 +169,17 @@ async def _load_bets_for_clv(
                     BetORM.kickoff_utc > now,
                     BetORM.kickoff_utc <= cutoff,
                 ),
-                # Recovery path: force-closed by kickoff but CLV never captured
+                # Recovery path A: force-closed by kickoff but CLV never captured
                 and_(
                     BetORM.status == "closed",
                     BetORM.close_reason == "kickoff",
+                ),
+                # Recovery path B: still open/paper but kickoff already passed
+                # (position_manager couldn't close — e.g. mock tokens without real price)
+                and_(
+                    BetORM.status.in_(["open", "paper"]),
+                    BetORM.kickoff_utc <= now,
+                    BetORM.kickoff_utc >= now - timedelta(hours=3),
                 ),
             ),
         )
