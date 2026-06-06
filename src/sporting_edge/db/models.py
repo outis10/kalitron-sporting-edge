@@ -192,7 +192,7 @@ class BetORM(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     signal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    match_id: Mapped[str] = mapped_column(ForeignKey("matches.id"), nullable=False)
+    match_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     condition_id: Mapped[str] = mapped_column(String(128), nullable=False)
     market_question: Mapped[str] = mapped_column(Text, nullable=False)
     outcome: Mapped[str] = mapped_column(String(10), nullable=False)

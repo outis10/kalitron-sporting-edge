@@ -163,7 +163,7 @@ async def execute_outright_signals(signals: list[OutrightSignal]) -> int:
             stmt = pg_insert(BetORM).values(
                 id=bet_id,
                 signal_id=bet_id,            # outright bets don't go through SignalORM
-                match_id=market.condition_id, # reuse match_id field as market identifier
+                match_id=None,               # outright bets have no match row
                 condition_id=market.condition_id,
                 market_question=market.question,
                 outcome="home",              # sentinel — outright has no 1X2 outcome
