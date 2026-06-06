@@ -3,11 +3,19 @@ OutrightAnalyzer
 ================
 Evaluates outright WC markets and generates entry signals.
 
-Model: FIFA ranking-based Dirichlet prior
-  p_model[team] = points[team] / sum(points[all active teams])
+Model: FIFA ranking-based Dirichlet prior with power transform
+  p_model[team] = points[team]^α / sum(points^α)
+
+The power exponent (α=4) amplifies the spread between strong and weak
+teams: a 1.6x FIFA-points advantage becomes a 6.5x probability advantage.
+Without it, all 48 WC teams get ~2% — indistinguishable noise.
 
 Signal condition (proactive):
   EV = (p_model / p_market) - 1 >= OUTRIGHT_EV_THRESHOLD
+
+Guards:
+  - p_market < MIN_MARKET_PRICE → skip (market is almost certainly right)
+  - EV > MAX_CREDIBLE_EV → skip (model error, not edge)
 
 The analyzer is also called by ShockDetector (reactive path) with
 trigger="shock" — same EV logic, different entry reason.
@@ -21,9 +29,23 @@ from sporting_edge.models.schemas import OutrightMarket, OutrightSignal
 
 log = get_logger(__name__)
 
+# ── Model constants ────────────────────────────────────────────────────────────
+
+# Power exponent for FIFA points transform: p ∝ points^ALPHA
+# Higher alpha → stronger teams dominate more. α=4 makes Brazil ~6x more
+# likely than Iraq (vs 1.2x with raw points) which is closer to market reality.
+_ALPHA = 4.0
+
+# Teams priced below this are almost certainly correct — model can't beat
+# the wisdom of $336M in liquidity on extreme tail events.
+_MIN_MARKET_PRICE = 0.005  # 0.5%
+
+# EV above this is a model error, not edge (e.g. Iraq at 3977%).
+_MAX_CREDIBLE_EV = 5.0  # 500%
+
 # ── FIFA Rankings prior (WC 2026 participants, approximate points) ─────────────
 # Source: FIFA ranking as of WC 2026 qualification.
-# Used to compute p_model via Dirichlet prior: p[i] = points[i] / sum(points)
+# Used to compute p_model via Dirichlet prior with power transform.
 # Update this table after each ranking update for better calibration.
 
 FIFA_POINTS: dict[str, float] = {
@@ -86,16 +108,17 @@ def compute_model_probability(
     active_teams = {_normalize_team(m.team_name) for m in all_markets}
     active_teams.add(_normalize_team(team_name))
 
-    total_points = sum(
-        FIFA_POINTS.get(t, 1200.0)  # default 1200 for unknown teams
+    # Power transform: p ∝ points^α amplifies gap between strong/weak teams
+    total_weight = sum(
+        FIFA_POINTS.get(t, 1200.0) ** _ALPHA
         for t in active_teams
     )
-    if total_points == 0:
+    if total_weight == 0:
         return 1.0 / max(len(active_teams), 1)
 
     team_key = _normalize_team(team_name)
-    team_points = FIFA_POINTS.get(team_key, 1200.0)
-    return team_points / total_points
+    team_weight = FIFA_POINTS.get(team_key, 1200.0) ** _ALPHA
+    return team_weight / total_weight
 
 
 def analyze_outright_markets(
@@ -120,7 +143,28 @@ def analyze_outright_markets(
         if p_market <= 0:
             continue
 
+        # Skip extreme tail markets — $336M in liquidity prices these correctly
+        if p_market < _MIN_MARKET_PRICE:
+            log.debug(
+                "outright_skip_tail_market",
+                team=market.team_name,
+                p_market=round(p_market, 4),
+                min_threshold=_MIN_MARKET_PRICE,
+            )
+            continue
+
         ev = (p_model / p_market) - 1.0
+
+        # EV above this threshold is model error, not edge
+        if ev > _MAX_CREDIBLE_EV:
+            log.debug(
+                "outright_skip_extreme_ev",
+                team=market.team_name,
+                ev=round(ev, 2),
+                p_model=round(p_model, 4),
+                p_market=round(p_market, 4),
+            )
+            continue
 
         log.debug(
             "outright_ev_check",
