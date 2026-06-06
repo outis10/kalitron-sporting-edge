@@ -13,6 +13,23 @@ def main():
     parser = argparse.ArgumentParser(description="Kalitron Sporting Edge CLI")
     sub = parser.add_subparsers(dest="command")
 
+    # Outright WC scan — one-shot, no DB required
+    outright_p = sub.add_parser(
+        "outright",
+        help="Scan Polymarket WC 2026 outright markets and show signals (no DB needed)",
+    )
+    outright_p.add_argument(
+        "--execute",
+        action="store_true",
+        help="Place paper bets for signals found (requires DB running)",
+    )
+    outright_p.add_argument(
+        "--min-liquidity",
+        type=float,
+        default=1_000.0,
+        help="Minimum market liquidity to consider (default: $1000)",
+    )
+
     # Run pipeline once
     run_p = sub.add_parser("run", help="Run the full pipeline once")
     run_p.add_argument("--leagues", help="Comma-separated league IDs", default=None)
@@ -77,7 +94,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "run":
+    if args.command == "outright":
+        asyncio.run(_run_outright_scan(args.min_liquidity, args.execute))
+
+    elif args.command == "run":
         league_ids = None
         if args.leagues:
             league_ids = [int(x) for x in args.leagues.split(",")]
@@ -130,6 +150,64 @@ async def _run_pipeline(league_ids):
     print(f"\n✅ Pipeline complete — {len(state.signals)} signals, {len(state.bets_placed)} bets placed")
     if state.error:
         print(f"⚠️  Error: {state.error}")
+
+
+async def _run_outright_scan(min_liquidity: float = 1_000.0, execute: bool = False) -> None:
+    """
+    One-shot outright scan: fetch WC markets, run analyzer, print signals.
+    No DB required unless --execute is passed.
+    """
+    from sporting_edge.agents.outright_collector import collect_outright_markets
+    from sporting_edge.agents.outright_analyzer import analyze_outright_markets
+    from sporting_edge.config import settings
+
+    print("\n🏆 Outright WC 2026 — Market Scan\n")
+
+    markets = await collect_outright_markets(min_liquidity=min_liquidity)
+    if not markets:
+        print("❌ No WC outright markets found on Polymarket.")
+        print("   Check that the World Cup markets are active at polymarket.com/fifa-world-cup")
+        return
+
+    print(f"Found {len(markets)} markets  (min liquidity: ${min_liquidity:,.0f})\n")
+    print(f"{'Team':<22} {'Market%':>8} {'Liquidity':>12} {'Vol24h':>10}")
+    print("─" * 56)
+    for m in markets:
+        print(f"{m.team_name:<22} {m.yes_price:>7.1%} ${m.liquidity:>10,.0f} ${m.volume_24h:>8,.0f}")
+
+    signals = analyze_outright_markets(markets, trigger="proactive")
+
+    print(f"\n{'─'*56}")
+    print(f"EV threshold: {settings.outright_ev_threshold:.0%} | "
+          f"Max positions: {settings.outright_max_positions} | "
+          f"Max bet: {settings.outright_max_bet_pct:.0%} bankroll\n")
+
+    if not signals:
+        print("No signals above EV threshold.")
+        print("  → Market prices are close to FIFA ranking model — no edge detected.")
+        return
+
+    print(f"{'':─<56}")
+    print(f"  {len(signals)} SIGNAL(S) FOUND\n")
+    print(f"{'Team':<22} {'ModelP':>7} {'MktP':>7} {'EV':>8} {'Size':>8} {'Trigger':>9}")
+    print("─" * 65)
+    for s in signals:
+        print(
+            f"{s.market.team_name:<22} "
+            f"{s.model_probability:>6.1%} "
+            f"{s.market_probability:>6.1%} "
+            f"{s.expected_value:>7.1%} "
+            f"${s.size_usd:>6.2f} "
+            f"  {s.trigger}"
+        )
+
+    if execute:
+        print(f"\nPlacing paper bets for {len(signals)} signal(s)...")
+        from sporting_edge.graph.outright_pipeline import execute_outright_signals
+        placed = await execute_outright_signals(signals)
+        print(f"✅ {placed} bet(s) placed (paper mode: {settings.paper_trading})")
+    else:
+        print(f"\nRun with --execute to place paper bets for these signals.")
 
 
 async def _export_backtest(
