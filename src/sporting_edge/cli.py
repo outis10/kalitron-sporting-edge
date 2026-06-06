@@ -822,7 +822,15 @@ async def _apply_migrations():
             for path in migration_files:
                 sql = path.read_text()
                 print(f"Applying: {path.name}")
-                await conn.execute(sa.text(sql))
+                # asyncpg rejects multiple statements in one call — split by ';'
+                # Strip comment-only lines before checking if a chunk is empty
+                for chunk in sql.split(";"):
+                    stmt = "\n".join(
+                        line for line in chunk.splitlines()
+                        if not line.strip().startswith("--")
+                    ).strip()
+                    if stmt:
+                        await conn.execute(sa.text(stmt))
                 print(f"✅ {path.name} applied")
     except Exception as exc:
         print(f"❌ Migration failed: {exc}")
