@@ -40,10 +40,22 @@ relativa basado en:
 - Ranking FIFA como prior de fuerza
 - Ajuste dinámico por resultados observados en la temporada 2026
 
-**Señal de entrada:**
+**Señales de entrada (dos tipos):**
+
+1. **Proactiva** — modelo detecta subvaloración antes de un evento:
 ```
 EV = (p_modelo / p_mercado) - 1 >= OUTRIGHT_EV_THRESHOLD (default 15%)
 ```
+
+2. **Reactiva (shock detection)** — el PolymarketStreamer detecta caída brusca en tiempo real:
+```
+drop_pct >= OUTRIGHT_SHOCK_DROP_PCT (15%)  AND
+drop_abs >= OUTRIGHT_SHOCK_DROP_ABS (3¢)
+→ BUY si modelo sigue diciendo EV > threshold (no entrar en caídas justificadas)
+```
+
+La señal reactiva es complementaria — solo dispara si la caída crea una subvaloración que el modelo confirma. Evita entrar en caídas que son correcciones legítimas (equipo eliminado).
+
 Threshold más alto que match markets (8%) para compensar el 3% de fee (×2) y
 la mayor incertidumbre del modelo.
 

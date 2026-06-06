@@ -36,15 +36,26 @@ Ver [ADR-008](../adr/ADR-008-outright-tournament-trading.md) para decisión arqu
 
 | # | Issue | Descripción | Prioridad |
 |---|-------|-------------|-----------|
-| 1 | #27 | `bet_type` field en BetORM + migración | Alta |
-| 2 | #28 | `OutrightCollector` — discovery y parsing de mercados "Will X win WC?" | Alta |
-| 3 | #29 | `OutrightAnalyzer` — señal de entrada basada en fuerza relativa vs precio | Alta |
-| 4 | #30 | Pipeline outright + integración con ExecutionAgent/PositionManager | Media |
-| 5 | #31 | Settings para parámetros outright (EV threshold, TP/SL multipliers) | Media |
+| 1 | [#28](https://github.com/outis10/kalitron-sporting-edge/issues/28) | `bet_type` field en BetORM + migración | Alta |
+| 2 | [#29](https://github.com/outis10/kalitron-sporting-edge/issues/29) | `OutrightCollector` — discovery y parsing de mercados "Will X win WC?" | Alta |
+| 3 | [#30](https://github.com/outis10/kalitron-sporting-edge/issues/30) | `OutrightAnalyzer` — señal de entrada proactiva (EV vs modelo) | Alta |
+| 4 | [#31](https://github.com/outis10/kalitron-sporting-edge/issues/31) | Pipeline outright + integración con ExecutionAgent/PositionManager | Media |
+| 5 | [#32](https://github.com/outis10/kalitron-sporting-edge/issues/32) | Settings: EV threshold, TP/SL multipliers, max positions | Media |
+| 6 | [#33](https://github.com/outis10/kalitron-sporting-edge/issues/33) | Outright shock detector — entrada reactiva en caídas fuertes | Media |
+
+### Dos tipos de señal de entrada
+
+```
+Señal proactiva (OutrightAnalyzer):        Señal reactiva (ShockDetector):
+Modelo → p_equipo > p_mercado + fee        PolymarketStreamer detecta caída ≥15%
+→ BUY antes de que el mercado corrija       → BUY en el fondo de la caída
+                                            → válido solo si modelo sigue diciendo EV > threshold
+```
 
 ### Fuera de alcance
 
 - Simulador Monte Carlo completo del torneo
+- In-play trading (durante los 90 minutos del partido)
 - Datos históricos de clasificatorias para calibración del modelo
 - Dashboard de posiciones outright
 - Bracket/knockout tracking automatizado
@@ -135,7 +146,7 @@ outright_max_bet_pct: float = 0.01       # 1% bankroll per outright (more conser
 
 ## 7. Definición de Done (DoD)
 
-- [ ] Issues #27–#31 cerrados
+- [ ] Issues #28–#33 cerrados
 - [ ] Pipeline outright ejecutado en dry-run con mercados WC reales
 - [ ] `bet_type='outright'` visible en DBeaver con posiciones separadas
 - [ ] PositionManager hace TP/SL para outright sin kickoff
