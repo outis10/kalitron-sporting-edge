@@ -68,13 +68,86 @@ async def collect_outright_markets(
 
 
 async def _fetch_gamma_markets() -> list[dict]:
-    """Query Gamma API for active WC outright markets."""
+    """
+    Query Gamma API for active WC outright markets.
+
+    Strategy:
+      1. Try GET /events?slug=world-cup-winner to find the WC event ID,
+         then fetch all markets for that event (fast, ~48 results).
+      2. Fall back to paginated /markets search with 422-safe pagination.
+    """
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        # Strategy 1: event-based lookup (fast path)
+        results = await _fetch_by_event(client)
+        if results:
+            log.debug("outright_gamma_via_event", count=len(results))
+            return results
+
+        # Strategy 2: paginated search with error-safe pagination
+        log.debug("outright_gamma_falling_back_to_pagination")
+        results = await _fetch_by_pagination(client)
+        log.debug("outright_gamma_raw_found", count=len(results))
+        return results
+
+
+async def _fetch_by_event(client: httpx.AsyncClient) -> list[dict]:
+    """
+    Look up the WC event on Gamma and return all its markets.
+    Tries several likely event slugs.
+    """
+    slugs = [
+        "world-cup-winner",
+        "2026-fifa-world-cup-winner",
+        "fifa-world-cup-2026-winner",
+        "will-win-the-2026-fifa-world-cup",
+    ]
+    for slug in slugs:
+        try:
+            resp = await client.get(
+                f"{GAMMA_URL}/events",
+                params={"slug": slug, "active": "true"},
+            )
+            if resp.status_code != 200:
+                continue
+            events = resp.json()
+            if not events:
+                continue
+
+            event = events[0] if isinstance(events, list) else events
+            event_id = event.get("id") or event.get("event_id")
+            if not event_id:
+                continue
+
+            # Fetch all markets for this event
+            mresp = await client.get(
+                f"{GAMMA_URL}/markets",
+                params={"event_id": event_id, "limit": 100},
+            )
+            if mresp.status_code == 200:
+                markets = mresp.json()
+                wc_markets = [
+                    m for m in markets
+                    if _is_wc_outright(m.get("question", "") or m.get("title", ""))
+                ]
+                if wc_markets:
+                    return wc_markets
+        except Exception:
+            continue
+    return []
+
+
+async def _fetch_by_pagination(client: httpx.AsyncClient) -> list[dict]:
+    """
+    Paginate /markets filtered by WC question text.
+    Stops on 422 (max offset exceeded) or when batch is empty.
+    """
     results: list[dict] = []
     offset = 0
     limit = 100
+    max_offset = 5_000  # safety cap — WC markets appear in first pages
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        while True:
+    while offset <= max_offset:
+        try:
             resp = await client.get(
                 f"{GAMMA_URL}/markets",
                 params={
@@ -84,21 +157,25 @@ async def _fetch_gamma_markets() -> list[dict]:
                     "offset": offset,
                 },
             )
+            if resp.status_code == 422:
+                break  # API offset limit reached
             resp.raise_for_status()
-            batch = resp.json()
-            if not batch:
-                break
+        except httpx.HTTPStatusError:
+            break
 
-            for m in batch:
-                q = m.get("question", "") or m.get("title", "")
-                if _is_wc_outright(q):
-                    results.append(m)
+        batch = resp.json()
+        if not batch:
+            break
 
-            if len(batch) < limit:
-                break
-            offset += limit
+        for m in batch:
+            q = m.get("question", "") or m.get("title", "")
+            if _is_wc_outright(q):
+                results.append(m)
 
-    log.debug("outright_gamma_raw_found", count=len(results))
+        if len(batch) < limit:
+            break
+        offset += limit
+
     return results
 
 

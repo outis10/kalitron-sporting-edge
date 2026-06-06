@@ -160,3 +160,4 @@ outright_max_bet_pct: float = 0.01       # 1% bankroll per outright (more conser
 | Fecha | Cambio |
 |-------|--------|
 | 2026-06-05 | Documento inicial — diseño pre-implementación |
+| 2026-06-06 | `outright_collector.py`: paginación mejorada — búsqueda vía evento primero, fallback paginado con manejo de 422 y cap en offset=5000 |
