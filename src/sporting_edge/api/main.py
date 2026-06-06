@@ -179,6 +179,12 @@ app.include_router(standings.router)
 async def health():
     streamer = get_streamer()
     ws_health = streamer.health() if streamer else {"connected": False}
+
+    jobs = []
+    for job in scheduler.get_jobs():
+        next_run = job.next_run_time.isoformat() if job.next_run_time else None
+        jobs.append({"id": job.id, "next_run": next_run})
+
     return {
         "status": "ok",
         "paper_trading": settings.paper_trading,
@@ -186,6 +192,10 @@ async def health():
         "leagues": settings.active_league_ids,
         "environment": settings.environment,
         "websocket": ws_health,
+        "scheduler": {
+            "running": scheduler.running,
+            "jobs": jobs,
+        },
     }
 
 
