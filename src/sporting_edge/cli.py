@@ -34,6 +34,41 @@ def main():
     # Apply DB migrations
     sub.add_parser("migrate", help="Apply database migrations")
 
+    # Export resolved matches from DB as a backtest-ready CSV
+    export_p = sub.add_parser(
+        "export-backtest",
+        help="Export resolved matches from DB to a CSV ready for enrich-backtest + backtest",
+    )
+    export_p.add_argument("--output", default="data/backtest_export.csv", help="Output CSV path")
+    export_p.add_argument("--league", help="Comma-separated league IDs to filter (e.g. 39,140)")
+    export_p.add_argument("--since", help="ISO date lower bound, e.g. 2025-01-01 (default: 90 days ago)")
+    export_p.add_argument("--until", help="ISO date upper bound (default: today)")
+
+    # Enrich backtest CSV with real Polymarket historical prices
+    enrich_p = sub.add_parser(
+        "enrich-backtest",
+        help="Fetch real Polymarket prices for backtest rows (fills market_yes_price from CLOB history)",
+    )
+    enrich_p.add_argument("file", help="Input CSV with yes_token_id + kickoff_utc columns")
+    enrich_p.add_argument("--output", help="Output CSV path (default: <file>_enriched.csv)")
+    enrich_p.add_argument(
+        "--interval",
+        default="1m",
+        choices=["1m", "1h", "6h", "1d"],
+        help="Candle interval for price lookup (default: 1m)",
+    )
+    enrich_p.add_argument(
+        "--window",
+        type=int,
+        default=60,
+        help="Minutes before kickoff to search for price (default: 60)",
+    )
+    enrich_p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Re-fetch price even if market_yes_price is already set",
+    )
+
     # Inject mock market odds for testing (no real Polymarket needed)
     mock_p = sub.add_parser("mock-odds", help="Inject fake Polymarket odds to test full pipeline")
     mock_p.add_argument("--ev", type=float, default=0.12, help="Target EV discount (default 0.12 = 12%%)")
@@ -71,6 +106,15 @@ def main():
     elif args.command == "migrate":
         _apply_migrations()
 
+    elif args.command == "export-backtest":
+        league_ids = [int(x) for x in args.league.split(",")] if args.league else None
+        asyncio.run(_export_backtest(args.output, league_ids, args.since, args.until))
+
+    elif args.command == "enrich-backtest":
+        from pathlib import Path
+        output = args.output or str(Path(args.file).with_stem(Path(args.file).stem + "_enriched"))
+        asyncio.run(_enrich_backtest(args.file, output, args.interval, args.window, args.overwrite))
+
     elif args.command == "mock-odds":
         asyncio.run(_inject_mock_odds(args.ev, args.kickoff_minutes))
 
@@ -86,6 +130,268 @@ async def _run_pipeline(league_ids):
     print(f"\n✅ Pipeline complete — {len(state.signals)} signals, {len(state.bets_placed)} bets placed")
     if state.error:
         print(f"⚠️  Error: {state.error}")
+
+
+async def _export_backtest(
+    output_path: str,
+    league_ids: list[int] | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> None:
+    """
+    Query resolved matches from the DB and write a CSV ready for enrich-backtest.
+
+    Joins: matches + teams + leagues + market_odds (latest snapshot per outcome).
+    Form data columns are set to 0 — market_yes_price is a placeholder that
+    enrich-backtest will replace with real CLOB historical prices.
+
+    Skips matches without result_outcome or without a yes_token_id in market_odds.
+    """
+    import csv
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from sporting_edge.config.logging import configure_logging
+    from sporting_edge.db.models import LeagueORM, MarketOddsORM, MatchORM, TeamORM
+    from sporting_edge.db.session import AsyncSessionLocal
+
+    configure_logging()
+
+    now = datetime.now(tz=timezone.utc)
+    since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if since else now - timedelta(days=90)
+    until_dt = datetime.fromisoformat(until).replace(tzinfo=timezone.utc) if until else now
+
+    async with AsyncSessionLocal() as db:
+        # Load resolved matches in the date window
+        q = select(MatchORM).where(
+            MatchORM.result_outcome.is_not(None),
+            MatchORM.home_goals.is_not(None),
+            MatchORM.kickoff_utc >= since_dt,
+            MatchORM.kickoff_utc <= until_dt,
+        )
+        if league_ids:
+            q = q.where(MatchORM.league_id.in_(league_ids))
+
+        match_rows = list((await db.execute(q)).scalars().all())
+
+        if not match_rows:
+            print("❌ No resolved matches found in DB for the given filters.")
+            print(f"   Window: {since_dt.date()} → {until_dt.date()}")
+            if league_ids:
+                print(f"   Leagues: {league_ids}")
+            return
+
+        match_ids = [m.id for m in match_rows]
+
+        # Load all market odds for these matches (latest snapshot per outcome)
+        odds_rows = list(
+            (await db.execute(
+                select(MarketOddsORM)
+                .where(
+                    MarketOddsORM.match_id.in_(match_ids),
+                    MarketOddsORM.yes_token_id.is_not(None),
+                )
+                .order_by(MarketOddsORM.match_id, MarketOddsORM.outcome, MarketOddsORM.fetched_at.desc())
+            )).scalars().all()
+        )
+
+        # Keep only the latest snapshot per (match_id, outcome)
+        seen: set[tuple] = set()
+        latest_odds: list[MarketOddsORM] = []
+        for o in odds_rows:
+            key = (o.match_id, o.outcome)
+            if key not in seen:
+                seen.add(key)
+                latest_odds.append(o)
+
+        # Build lookup maps
+        odds_by_match: dict[str, list[MarketOddsORM]] = {}
+        for o in latest_odds:
+            odds_by_match.setdefault(o.match_id, []).append(o)
+
+        team_ids = {m.home_team_id for m in match_rows} | {m.away_team_id for m in match_rows}
+        teams = {
+            t.id: t for t in (
+                await db.execute(select(TeamORM).where(TeamORM.id.in_(team_ids)))
+            ).scalars().all()
+        }
+
+        league_ids_found = {m.league_id for m in match_rows}
+        leagues = {
+            lg.id: lg for lg in (
+                await db.execute(select(LeagueORM).where(LeagueORM.id.in_(league_ids_found)))
+            ).scalars().all()
+        }
+
+    # Build CSV rows
+    FIELDNAMES = [
+        "match_id", "home_team", "away_team", "home_team_id", "away_team_id",
+        "league_id", "league_name", "season", "kickoff_utc",
+        "home_goals_full", "away_goals_full", "target_outcome",
+        # Form data — not in DB, defaulted to 0; enrich manually or accept lower confidence
+        "home_form_w", "home_form_d", "home_form_l", "home_form_gf", "home_form_ga",
+        "away_form_w", "away_form_d", "away_form_l", "away_form_gf", "away_form_ga",
+        "h2h_home_wins", "h2h_draws", "h2h_away_wins", "h2h_total",
+        # Market data
+        "market_yes_price", "market_liquidity", "yes_token_id", "no_token_id", "condition_id",
+    ]
+
+    csv_rows = []
+    skipped_no_odds = 0
+
+    for match in match_rows:
+        odds_list = odds_by_match.get(match.id, [])
+        if not odds_list:
+            skipped_no_odds += 1
+            continue
+
+        home = teams.get(match.home_team_id)
+        away = teams.get(match.away_team_id)
+        league = leagues.get(match.league_id)
+
+        for odds in odds_list:
+            csv_rows.append({
+                "match_id": match.id,
+                "home_team": home.name if home else match.home_team_id,
+                "away_team": away.name if away else match.away_team_id,
+                "home_team_id": match.home_team_id,
+                "away_team_id": match.away_team_id,
+                "league_id": match.league_id,
+                "league_name": league.name if league else "",
+                "season": league.season if league else "",
+                "kickoff_utc": match.kickoff_utc.isoformat(),
+                "home_goals_full": match.home_goals,
+                "away_goals_full": match.away_goals,
+                "target_outcome": odds.outcome,
+                # Form — defaulted to 0
+                "home_form_w": 0, "home_form_d": 0, "home_form_l": 0,
+                "home_form_gf": 0, "home_form_ga": 0,
+                "away_form_w": 0, "away_form_d": 0, "away_form_l": 0,
+                "away_form_gf": 0, "away_form_ga": 0,
+                "h2h_home_wins": 0, "h2h_draws": 0, "h2h_away_wins": 0, "h2h_total": 0,
+                # Market — yes_price is a placeholder; enrich-backtest replaces it
+                "market_yes_price": round(odds.yes_price, 4),
+                "market_liquidity": round(odds.liquidity, 2),
+                "yes_token_id": odds.yes_token_id or "",
+                "no_token_id": odds.no_token_id or "",
+                "condition_id": odds.condition_id,
+            })
+
+    if not csv_rows:
+        print("❌ No exportable rows (all matches lack market odds with yes_token_id).")
+        return
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(csv_rows)
+
+    matches_exported = len({r["match_id"] for r in csv_rows})
+    print(f"✅ Exported {matches_exported} matches → {len(csv_rows)} rows (home/draw/away)")
+    print(f"   Skipped {skipped_no_odds} matches without Polymarket token IDs")
+    print(f"   Window: {since_dt.date()} → {until_dt.date()}")
+    print(f"   Output: {output_file}")
+    print()
+    print("Next steps:")
+    print(f"  1. sporting-edge enrich-backtest {output_path}   # fetch real kickoff prices")
+    print(f"  2. sporting-edge backtest {output_path.replace('.csv', '_enriched.csv')} --bankroll 1000")
+
+
+async def _enrich_backtest(
+    input_path: str,
+    output_path: str,
+    interval: str = "1m",
+    window_minutes: int = 60,
+    overwrite: bool = False,
+) -> None:
+    """
+    Read a backtest CSV and fill missing market_yes_price values with real
+    Polymarket historical prices fetched from the CLOB /prices-history endpoint.
+
+    Required CSV columns: yes_token_id, kickoff_utc
+    Populated column:     market_yes_price
+    Rows without yes_token_id are written as-is with a warning.
+    """
+    import csv
+    from datetime import datetime
+    from pathlib import Path
+
+    from sporting_edge.config.logging import configure_logging
+    from sporting_edge.tools.polymarket_tools import fetch_kickoff_price
+
+    configure_logging()
+
+    input_file = Path(input_path)
+    if not input_file.exists():
+        print(f"❌ File not found: {input_path}")
+        return
+
+    with open(input_file, newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    if not rows:
+        print("❌ CSV is empty")
+        return
+
+    fieldnames = list(rows[0].keys())
+    if "market_yes_price" not in fieldnames:
+        fieldnames.append("market_yes_price")
+
+    enriched = 0
+    skipped = 0
+    failed = 0
+
+    print(f"Enriching {len(rows)} rows from {input_file.name}...")
+
+    for i, row in enumerate(rows, 1):
+        token_id = row.get("yes_token_id", "").strip()
+        kickoff_str = row.get("kickoff_utc", "").strip()
+        existing_price = row.get("market_yes_price", "").strip()
+
+        if existing_price and not overwrite:
+            skipped += 1
+            continue
+
+        if not token_id:
+            print(f"  [{i}/{len(rows)}] ⚠️  no yes_token_id — skipping")
+            failed += 1
+            continue
+
+        if not kickoff_str:
+            print(f"  [{i}/{len(rows)}] ⚠️  no kickoff_utc for token {token_id[:8]} — skipping")
+            failed += 1
+            continue
+
+        try:
+            kickoff_utc = datetime.fromisoformat(kickoff_str)
+        except ValueError:
+            print(f"  [{i}/{len(rows)}] ⚠️  invalid kickoff_utc '{kickoff_str}' — skipping")
+            failed += 1
+            continue
+
+        price = await fetch_kickoff_price(token_id, kickoff_utc, window_minutes=window_minutes)
+        if price is None:
+            print(f"  [{i}/{len(rows)}] ❌ no price found for token {token_id[:8]}")
+            failed += 1
+        else:
+            row["market_yes_price"] = round(price, 4)
+            enriched += 1
+            print(f"  [{i}/{len(rows)}] ✅ {token_id[:8]}... → {price:.4f}")
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"\n✅ Done — enriched: {enriched}, skipped: {skipped}, failed: {failed}")
+    print(f"   Output: {output_file}")
 
 
 async def _inject_mock_odds(ev_discount: float = 0.12, kickoff_minutes: int = 240) -> None:

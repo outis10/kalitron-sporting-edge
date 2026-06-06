@@ -654,3 +654,76 @@ def cancel_order(order_id: str) -> bool:
     except Exception as exc:
         log.warning("cancel_order_failed", order_id=order_id, error=str(exc))
         return False
+
+
+# ── Historical price data (public CLOB endpoint, no auth) ─────────────────────
+
+async def fetch_price_history(
+    token_id: str,
+    interval: str = "1h",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+) -> list[dict]:
+    """
+    Fetch historical price candles for a Polymarket YES token.
+
+    Calls GET {CLOB_URL}/prices-history — public, no auth required.
+    Returns [{"t": unix_timestamp, "p": price}, ...] oldest-first.
+
+    interval: "1m" | "1h" | "6h" | "1d" | "1w" | "max" | "all"
+    """
+    params: dict[str, Any] = {"market": token_id, "interval": interval}
+    if start_ts is not None:
+        params["startTs"] = start_ts
+    if end_ts is not None:
+        params["endTs"] = end_ts
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(f"{CLOB_URL}/prices-history", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        history = data.get("history", [])
+        log.debug(
+            "price_history_fetched",
+            token_id=token_id[:8],
+            points=len(history),
+            interval=interval,
+        )
+        return history
+    except Exception as exc:
+        log.warning("price_history_failed", token_id=token_id[:8], error=str(exc))
+        return []
+
+
+async def fetch_kickoff_price(
+    token_id: str,
+    kickoff_utc: datetime,
+    window_minutes: int = 60,
+) -> float | None:
+    """
+    Return the YES price at (or nearest to) kickoff.
+
+    Tries 1-minute candles first over [kickoff - window_minutes, kickoff + 5m].
+    Falls back to 1h candles over a 6-hour window if 1m returns nothing.
+    Used by the backtest enrichment workflow to populate market_yes_price
+    with real Polymarket data instead of manually-entered estimates.
+    """
+    from datetime import timezone as _tz
+
+    if kickoff_utc.tzinfo is None:
+        kickoff_utc = kickoff_utc.replace(tzinfo=_tz.utc)
+    kickoff_ts = int(kickoff_utc.timestamp())
+    start_ts = kickoff_ts - window_minutes * 60
+    end_ts = kickoff_ts + 300  # 5-min buffer after kickoff
+
+    history = await fetch_price_history(token_id, "1m", start_ts, end_ts)
+    if not history:
+        history = await fetch_price_history(
+            token_id, "1h", kickoff_ts - 3600 * 6, end_ts
+        )
+    if not history:
+        return None
+
+    best = min(history, key=lambda c: abs(int(c["t"]) - kickoff_ts))
+    return float(best["p"])
