@@ -790,23 +790,17 @@ async def _seed_test_fixtures(db, kickoff) -> list:
 
 
 async def _apply_migrations():
-    """Run all SQL migrations via SQLAlchemy — works inside or outside Docker."""
+    """Run all SQL migrations via asyncpg — works inside or outside Docker."""
+    import asyncpg
     from pathlib import Path
-
-    import sqlalchemy as sa
-    from sqlalchemy.ext.asyncio import create_async_engine
 
     from sporting_edge.config import settings
 
-    # Resolve migrations dir relative to this file: src/sporting_edge/cli.py
-    # → go up 3 levels to project root, then into migrations/versions/
+    # Resolve migrations dir relative to this file, with Docker fallback
     here = Path(__file__).resolve().parent
     migrations_dir = here.parent.parent.parent / "migrations" / "versions"
-
-    # Fallback: /app/migrations inside Docker image
     if not migrations_dir.exists():
         migrations_dir = Path("/app/migrations/versions")
-
     if not migrations_dir.exists():
         print(f"❌ migrations/versions/ not found (tried {migrations_dir})")
         sys.exit(1)
@@ -816,24 +810,17 @@ async def _apply_migrations():
         print("No migration files found.")
         return
 
-    engine = create_async_engine(settings.database_url, echo=False)
+    # Use asyncpg directly — its execute() supports multiple statements,
+    # dollar-quoted strings ($$...$$), and BEGIN/COMMIT natively.
+    dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await asyncpg.connect(dsn)
     try:
-        async with engine.begin() as conn:
-            for path in migration_files:
-                sql = path.read_text()
-                print(f"Applying: {path.name}")
-                # asyncpg rejects multiple statements in one call — split by ';'
-                # Strip comment-only lines before checking if a chunk is empty
-                for chunk in sql.split(";"):
-                    stmt = "\n".join(
-                        line for line in chunk.splitlines()
-                        if not line.strip().startswith("--")
-                    ).strip()
-                    if stmt:
-                        await conn.execute(sa.text(stmt))
-                print(f"✅ {path.name} applied")
+        for path in migration_files:
+            print(f"Applying: {path.name}")
+            await conn.execute(path.read_text())
+            print(f"✅ {path.name} applied")
     except Exception as exc:
         print(f"❌ Migration failed: {exc}")
         sys.exit(1)
     finally:
-        await engine.dispose()
+        await conn.close()
