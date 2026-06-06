@@ -30,6 +30,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./logs:/app/logs
+      - ./migrations:/app/migrations
 
 volumes:
   pgdata:

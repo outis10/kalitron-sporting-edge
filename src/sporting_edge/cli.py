@@ -124,7 +124,7 @@ def main():
         )
 
     elif args.command == "migrate":
-        _apply_migrations()
+        asyncio.run(_apply_migrations())
 
     elif args.command == "export-backtest":
         league_ids = [int(x) for x in args.league.split(",")] if args.league else None
@@ -789,54 +789,43 @@ async def _seed_test_fixtures(db, kickoff) -> list:
     return rows
 
 
-def _apply_migrations():
-    import subprocess
+async def _apply_migrations():
+    """Run all SQL migrations via SQLAlchemy — works inside or outside Docker."""
+    from pathlib import Path
 
-    import glob as glob_mod
-    migration_files = sorted(
-        glob_mod.glob("migrations/versions/*.sql")
-    )
+    import sqlalchemy as sa
+    from sqlalchemy.ext.asyncio import create_async_engine
 
-    # Detect whether psql is available locally or only inside the Docker container
-    local_psql = subprocess.run(["which", "psql"], capture_output=True).returncode == 0
+    from sporting_edge.config import settings
 
-    for migration_file in migration_files:
-        if local_psql:
-            from sporting_edge.config import settings
-            cmd = ["psql", settings.database_url_sync, "-f", migration_file]
-        else:
-            # Copy file into container and run psql there
-            container = _get_db_container()
-            if not container:
-                print("❌ Could not find running Postgres container. Start it with: docker compose up -d db")
-                sys.exit(1)
-            copy_result = subprocess.run(
-                ["docker", "cp", migration_file, f"{container}:/tmp/migration.sql"],
-                capture_output=True, text=True,
-            )
-            if copy_result.returncode != 0:
-                print(f"❌ docker cp failed:\n{copy_result.stderr}")
-                sys.exit(1)
-            cmd = ["docker", "exec", container,
-                   "psql", "-U", "sporting", "-d", "sporting_edge", "-f", "/tmp/migration.sql"]
+    # Resolve migrations dir relative to this file: src/sporting_edge/cli.py
+    # → go up 3 levels to project root, then into migrations/versions/
+    here = Path(__file__).resolve().parent
+    migrations_dir = here.parent.parent.parent / "migrations" / "versions"
 
-        print(f"Applying: {migration_file}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"✅ {migration_file} applied")
-        else:
-            print(f"❌ Migration failed:\n{result.stderr}")
-            sys.exit(1)
+    # Fallback: /app/migrations inside Docker image
+    if not migrations_dir.exists():
+        migrations_dir = Path("/app/migrations/versions")
 
+    if not migrations_dir.exists():
+        print(f"❌ migrations/versions/ not found (tried {migrations_dir})")
+        sys.exit(1)
 
-def _get_db_container() -> str | None:
-    """Return the name of the running Postgres container, if any."""
-    import subprocess
-    result = subprocess.run(
-        ["docker", "ps", "--format", "{{.Names}}"],
-        capture_output=True, text=True,
-    )
-    for name in result.stdout.splitlines():
-        if "db" in name.lower() or "postgres" in name.lower():
-            return name
-    return None
+    migration_files = sorted(migrations_dir.glob("*.sql"))
+    if not migration_files:
+        print("No migration files found.")
+        return
+
+    engine = create_async_engine(settings.database_url, echo=False)
+    try:
+        async with engine.begin() as conn:
+            for path in migration_files:
+                sql = path.read_text()
+                print(f"Applying: {path.name}")
+                await conn.execute(sa.text(sql))
+                print(f"✅ {path.name} applied")
+    except Exception as exc:
+        print(f"❌ Migration failed: {exc}")
+        sys.exit(1)
+    finally:
+        await engine.dispose()
