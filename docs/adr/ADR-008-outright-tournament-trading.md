@@ -1,7 +1,7 @@
 # ADR-008: Estrategia de trading en mercados outright de torneo
 
 **Fecha:** 2026-06-05
-**Estado:** Propuesto
+**Estado:** Aceptado
 
 ## Contexto
 

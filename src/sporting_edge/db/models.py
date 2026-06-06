@@ -216,6 +216,9 @@ class BetORM(Base):
     # Set True once the lineup check (stage 1) has run for this bet
     lineup_checked: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # 'match' (1X2 pre-match) | 'outright' (tournament winner)
+    bet_type: Mapped[str] = mapped_column(String(20), nullable=False, default="match")
+
     # Settlement tracking
     settlement_source: Mapped[str | None] = mapped_column(String(20))  # api_football | polymarket | both
 

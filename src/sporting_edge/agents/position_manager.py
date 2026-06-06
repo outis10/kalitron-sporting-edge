@@ -275,8 +275,13 @@ async def _close_position(bet: BetORM, current_bid: float, reason: str) -> bool:
     Mirrors OrderExecutor._close_position() from the sibling repo.
     """
     entry = bet.entry_price
-    tp_price = entry * (1 + settings.take_profit_pct)
-    sl_price = entry * (1 - settings.stop_loss_pct)
+    is_outright = getattr(bet, "bet_type", "match") == "outright"
+    if is_outright:
+        tp_price = entry * settings.outright_tp_multiplier
+        sl_price = entry * settings.outright_sl_multiplier
+    else:
+        tp_price = entry * (1 + settings.take_profit_pct)
+        sl_price = entry * (1 - settings.stop_loss_pct)
 
     if reason == "price_check":
         if current_bid >= tp_price:

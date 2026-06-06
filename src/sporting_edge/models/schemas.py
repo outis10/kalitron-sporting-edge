@@ -301,6 +301,7 @@ class BetRecord(BaseModel):
     shares: float
     token_id: Optional[str] = None       # Polymarket YES/NO token ID (for closing)
     kickoff_utc: Optional[datetime] = None  # Match kickoff (for force-close logic)
+    bet_type: str = "match"              # "match" | "outright"
     paper_trade: bool = True
     status: BetStatus = BetStatus.PAPER
     polymarket_order_id: Optional[str] = None
@@ -342,6 +343,40 @@ class AgentState(BaseModel):
     started_at: datetime = Field(default_factory=datetime.utcnow)
     messages: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Outright pipeline outputs (parallel to match pipeline)
+    outright_markets: list["OutrightMarket"] = Field(default_factory=list)
+    outright_signals: list["OutrightSignal"] = Field(default_factory=list)
+
     class Config:
         arbitrary_types_allowed = True
         json_encoders = {datetime: lambda v: v.isoformat()}
+
+
+# ── Outright Tournament Domain ────────────────────────────────────────────────
+
+class OutrightMarket(BaseModel):
+    """A Polymarket outright market: 'Will X win the 2026 FIFA World Cup?'"""
+    condition_id: str
+    question: str
+    team_name: str
+    yes_token_id: str
+    no_token_id: str
+    yes_price: float = Field(ge=0.0, le=1.0)   # current ask (entry cost)
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    liquidity: float = 0.0
+    volume_24h: float = 0.0
+    neg_risk_market_id: str = ""                 # shared NegRisk pool ID
+
+
+class OutrightSignal(BaseModel):
+    """Identified outright edge — output of OutrightAnalyzer."""
+    signal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    market: OutrightMarket
+    model_probability: float    # FIFA-ranking prior probability
+    market_probability: float   # market yes_price (implied prob)
+    expected_value: float       # (p_model / p_market) - 1
+    kelly_fraction: float = 0.0
+    size_usd: float = 0.0
+    trigger: str = "proactive"  # "proactive" | "shock"
+    created_at: datetime = Field(default_factory=datetime.utcnow)

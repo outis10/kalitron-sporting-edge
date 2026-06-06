@@ -1,7 +1,7 @@
 # SDD — EPIC-003: Outright Tournament Trading
 
 **Fecha:** 2026-06-05
-**Estado:** Propuesto
+**Estado:** Implementado
 **Autor:** outis10
 
 ---
@@ -146,11 +146,11 @@ outright_max_bet_pct: float = 0.01       # 1% bankroll per outright (more conser
 
 ## 7. Definición de Done (DoD)
 
-- [ ] Issues #28–#33 cerrados
+- [x] Issues #28–#33 cerrados
 - [ ] Pipeline outright ejecutado en dry-run con mercados WC reales
-- [ ] `bet_type='outright'` visible en DBeaver con posiciones separadas
-- [ ] PositionManager hace TP/SL para outright sin kickoff
-- [ ] ADR-008 actualizado a "Aceptado"
+- [x] `bet_type='outright'` visible en DBeaver con posiciones separadas
+- [x] PositionManager hace TP/SL para outright sin kickoff
+- [x] ADR-008 actualizado a "Aceptado"
 - [ ] Al menos 1 señal outright generada en paper trading
 
 ---

@@ -14,10 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from sporting_edge.agents.bet_settler import run_bet_settler
 from sporting_edge.agents.clv_tracker import run_clv_tracker
 from sporting_edge.agents.position_manager import run_position_manager
+from sporting_edge.agents.shock_detector import init_shock_detector
 from sporting_edge.api.routers import markets, pipeline, positions, standings
 from sporting_edge.config import settings
 from sporting_edge.config.logging import configure_logging, get_logger
 from sporting_edge.graph.orchestrator import run_pipeline
+from sporting_edge.graph.outright_pipeline import run_outright_pipeline
 from sporting_edge.tools.polymarket_streamer import init_streamer, get_streamer
 
 configure_logging()
@@ -71,6 +73,14 @@ async def lifespan(app: FastAPI):
         id="clv_tracker",
         replace_existing=True,
     )
+    # Outright pipeline — WC 2026 tournament trading (runs same cadence as match pipeline)
+    scheduler.add_job(
+        _scheduled_outright_run,
+        trigger="interval",
+        minutes=settings.signal_scan_minutes,
+        id="outright_pipeline",
+        replace_existing=True,
+    )
     scheduler.start()
     log.info(
         "scheduler_started",
@@ -81,11 +91,17 @@ async def lifespan(app: FastAPI):
     )
 
     # Start Polymarket WebSocket streamer in the background.
-    # It begins with an empty asset list; DataCollector adds token_ids
-    # after discovering markets via Gamma API.
+    # It begins with an empty asset list; DataCollector and OutrightCollector
+    # add token_ids after discovering markets via Gamma API.
     streamer = init_streamer(asset_ids=[])
+
+    # Wire ShockDetector to streamer's on_price callback
+    detector = init_shock_detector()
+    streamer.on_price = detector.on_price_event
+
     streamer_task = asyncio.create_task(streamer.start())
     log.info("polymarket_streamer_started")
+    log.info("shock_detector_initialized")
 
     yield
 
@@ -126,6 +142,14 @@ async def _scheduled_clv_capture() -> None:
         await run_clv_tracker()
     except Exception as exc:
         log.error("clv_tracker_failed", error=str(exc))
+
+
+async def _scheduled_outright_run() -> None:
+    """Called by APScheduler — runs the outright WC 2026 pipeline."""
+    try:
+        await run_outright_pipeline()
+    except Exception as exc:
+        log.error("outright_pipeline_failed", error=str(exc))
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

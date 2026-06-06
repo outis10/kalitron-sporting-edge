@@ -265,6 +265,7 @@ async def _persist_bet(db, bet: BetRecord) -> None:
         polymarket_order_id=bet.polymarket_order_id,
         actual_fill_price=bet.actual_fill_price,
         placed_at=bet.placed_at,
+        bet_type=bet.bet_type,
     ).on_conflict_do_nothing()
     await db.execute(stmt)
 

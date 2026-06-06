@@ -94,6 +94,15 @@ class Settings(BaseSettings):
     langchain_api_key: str = ""
     langchain_project: str = "sporting-edge"
 
+    # ── Outright tournament trading ───────────────────────────────────────────
+    outright_ev_threshold: float = 0.15        # higher than match (compensates 3%×2 fee)
+    outright_tp_multiplier: float = 2.5        # close at 2.5× entry price
+    outright_sl_multiplier: float = 0.5        # stop-loss at 50% of entry
+    outright_max_positions: int = 3            # max simultaneous outright positions
+    outright_max_bet_pct: float = 0.01         # 1% bankroll per outright (more conservative)
+    outright_shock_drop_pct: float = 0.15      # min relative drop to trigger shock detector
+    outright_shock_drop_abs: float = 0.03      # min absolute drop in price units (3¢)
+
     # ── App ──────────────────────────────────────────────────────────────────
     environment: Literal["development", "production"] = "development"
     api_host: str = "0.0.0.0"
